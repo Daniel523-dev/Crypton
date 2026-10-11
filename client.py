@@ -1,7 +1,7 @@
 import json, os, sys, getpass, traceback, time
 CHUNK_SIZE = 12 * 1024 * 1024
 if sys.platform == "win32":
-    import winfuse2 as mount_backend
+    import winfuse3 as mount_backend
     PLATFORM = "windows"
 elif sys.platform.startswith("linux"):
     import vfs as mount_backend
@@ -41,14 +41,7 @@ class RemoteReader:
     def tell(self):return self.offset
     def close(self):pass
 class RemoteStorage:
-    def __init__(
-        self,
-        host="127.0.0.1",
-        port=9000,
-        key_path="./auth_key",
-        password=None,
-        auth_key_password_callback=None
-    ):
+    def __init__(self, host="127.0.0.1", port=9000, key_path="./auth_key", password=None, auth_key_password_callback=None):
         if not os.path.exists(key_path):raise FileNotFoundError(f"Key file not found: {key_path}")
         if not password:password = getpass.getpass("Client password: ")
         import network
@@ -138,6 +131,13 @@ class RemoteStorage:
                 else:keys.append(p)
         walk("")
         return keys
+    def get_hash(self, key):
+        req = make_packet({"cmd": "get_hash", "path": key})
+        with self.lock:
+            eid = self.client.send(req)
+            res = self.client.recv(eid, 60)
+        if not res or res[:1] != b"\x00":return None
+        return res[1:].hex()
     def open_read(self, relative_path):return RemoteReader(self, relative_path, self.get_size(relative_path))
     def write_file_from_local(self, source_path, relative_path):
         offset = 0
