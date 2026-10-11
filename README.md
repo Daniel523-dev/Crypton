@@ -15,7 +15,7 @@ The project is broken down into several modular components. For detailed instruc
 * **Cryptography** (`Encryption-README.md`): Overview of the cryptographic backbone (Argon2, AES-GCM, ChaCha20, X25519/Ed25519) securing the entire ecosystem.
 * **Networking** (`network-README.md`): Explanation of the custom TCP packet framing and streaming protocol used for zero-knowledge data transfer.
 * **Linux Mount** (`vfs-README.md`): Details on the POSIX-compliant FUSE bridge for Unix-like systems.
-* **Windows Mount** (`winfuse2-README.md`): Details on the Windows virtual drive integration, which is powered by the Windows Cloud Files API (`cfAPI`) rather than traditional FUSE.
+* **Windows Mount** (`winfuse-README.md`): Details on the Windows virtual drive integration, which is powered by the Windows Cloud Files API (`cfAPI`) rather than traditional FUSE.
 
 ## Windows SFTP Client Cache Management
 
