@@ -364,9 +364,3 @@ Under the current authentication behavior, deleting a client's authorization key
 - Check whether a file has been placed in a temporary upload state.
 - Review server-side logs and filesystem permissions.
 - Verify that the requested path resolves within the shared directory.
-
-## License
-
-Crypton is released under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-See the `LICENSE` file in the repository for the full license text and information about your rights and obligations when using or modifying this software.
