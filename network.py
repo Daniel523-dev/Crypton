@@ -6,7 +6,7 @@ MAX_QUEUE_BYTES = 256 * 1024 * 1024
 class ProtocolError(Exception):pass
 SALT_SIZE = 64
 STD_TIMEOUT = 5.0
-MAX_TIMEOUT = 60
+MAX_TIMEOUT = 60 * 2
 def _derive_at_rest_key(password, salt_or_path):
     if not password:raise ValueError("Password cannot be empty.")
     result = zxcvbn(password)
