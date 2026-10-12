@@ -414,7 +414,7 @@ if __name__ == "__main__":
     storage.on("write",lambda key, data:print(f"[WRITE] {key} ({len(data)} bytes) {time.time()}"),)
     storage.on("read",lambda key:print(f"[READ] {key}"),)
     storage.on("delete",lambda key:print(f"[DELETE] {key}"),)
-    mount_point = r"./mount"
+    mount_point = os.path.expanduser("~/mount")
     os.makedirs(mount_point, exist_ok=True)
     if PLATFORM == "windows":
         print(f"[*] Starting WinFUSE at {mount_point}...")
