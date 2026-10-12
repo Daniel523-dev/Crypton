@@ -1,100 +1,108 @@
-# WinFUSE
+# WinFUSE — Windows Cloud Files API Provider
 
-A Python-based Windows Cloud Files API filesystem provider with an application-controlled backing store.
+WinFUSE is a Python-based filesystem provider built on the Windows Cloud Files API (cfAPI). It exposes files and directories through a registered Windows synchronization root, allowing remote or locally backed storage to appear in the Windows filesystem as placeholders.
 
-WinFUSE exposes a normal Windows filesystem mount through the Windows Cloud Files API (CfAPI). Files and directories appear in the mounted location as placeholders, while the actual data is provided by an application-defined `BackingStore` implementation.
+File contents are provided by an application-defined `BackingStore` implementation. When Windows requests file data, WinFUSE retrieves it from the backing store and supplies it through the Cloud Files API.
 
-The project can be used as a standalone program backed by a local `./storage` directory, or imported as a Python module and backed by anything the application wants.
+WinFUSE is used by Crypton's Windows client to provide a OneDrive-like file access experience backed by Crypton's encrypted remote storage system.
+
+The provider and backing store are deliberately separate. WinFUSE handles Windows filesystem integration, placeholder creation, hydration, and synchronization events, while the application controls how actual file contents are stored and retrieved.
 
 ## How It Works
 
 ```text
-Windows Explorer
-       │
-       ▼
-CfAPI Mount Directory
-       │
-       ▼
-WinFUSE Provider
-       │
-       ├── Placeholder Data
-       │
-       └── File Contents
-              │
-              ▼
-         BackingStore
-              │
-      ┌───────┼────────┐
-      ▼       ▼        ▼
-   Local    Database  Remote
-    Disk              Storage
+Windows Explorer and Applications
+                 |
+                 v
+       Windows Cloud Files API
+                 |
+                 v
+        WinFUSE Provider
+          |           |
+          v           v
+    Placeholders   Hydration Requests
+          |           |
+          +-----+-----+
+                |
+                v
+           BackingStore
+                |
+       +--------+---------+
+       |        |         |
+       v        v         v
+    Local     Database   Remote
+    Storage              Storage
 ```
 
-The Cloud Files mount and the backing storage are intentionally separate.
+The mount directory and backing storage are separate.
 
-The mount must be located outside any other cloud-sync provider's sync root. The Python program itself can be stored elsewhere, including inside OneDrive.
+The mount directory must be outside any other cloud-sync provider's synchronization root. The Python application itself can be stored elsewhere, including in OneDrive, provided the actual WinFUSE mount is outside that provider's sync root.
 
 ## Features
 
-* Windows Cloud Files API integration
-* Placeholder-based filesystem namespace
-* On-demand file hydration
-* Application-controlled backing storage
-* Recursive initial namespace population
-* File creation and modification synchronization
-* File deletion synchronization
-* File and directory move synchronization
-* Standalone local filesystem backend
-* Importable Python module
-* No requirement for backing data to exist on the local filesystem
+- **Windows Cloud Files API Integration:** Registers a Windows synchronization root and connects to Cloud Files callbacks.
+- **Placeholder-Based Namespace:** Creates placeholders representing files and directories in the backing store.
+- **On-Demand Hydration:** Retrieves remote file contents when Windows requests them.
+- **Chunked Data Transfer:** Fetches file data in chunks of up to 12 MiB.
+- **Application-Controlled Storage:** Uses a configurable backing-store interface rather than requiring data to reside on the local filesystem.
+- **Namespace Refresh:** Periodically reconciles the mounted directory with the backing store.
+- **Filesystem Change Monitoring:** Uses Watchdog to detect file and directory operations in the mount.
+- **Bidirectional Synchronization Logic:** Propagates supported local changes to the backing store and can refresh changed backing files when compatible hash support is provided.
+- **Persistent Synchronization Journal:** Records pending operations in SQLite to support recovery after interruptions.
+- **Standalone Local Backend:** Includes a disk-backed example for testing the provider independently of Crypton.
+- **Reusable Python Module:** Allows applications to supply their own storage implementation.
 
 ## Requirements
 
-* Windows
-* Python 3
-* `watchdog`
-* Windows Cloud Files API (`cldapi.dll`)
+- Windows with support for the Windows Cloud Files API.
+- Python 3.
+- The `watchdog` Python package.
+- The Windows Cloud Files API library, `cldapi.dll`, available on the system.
+- The required Windows native APIs and filesystem permissions.
 
-Install the Python dependency with:
+Install the Python dependency:
 
 ```powershell
-pip install watchdog
+python -m pip install watchdog
 ```
 
-The program must be run on Windows because it uses Windows Cloud Files API functions directly.
+WinFUSE directly interfaces with Windows native APIs using Python `ctypes`. It is not a FUSE-based Windows implementation, despite the project name.
+
+The current implementation is Windows-only. Importing it on a non-Windows platform fails because it loads Windows system libraries directly.
 
 ## Standalone Usage
 
-Running the module directly uses the included local filesystem backend.
+Running `winfuse3.py` directly uses the included local filesystem backend.
+
+```powershell
+python winfuse3.py
+```
 
 The default layout is:
 
 ```text
 .
-├── cfapi_mirror.py
+├── winfuse3.py
 ├── storage\
-└── mount\
+├── mount\
+└── sync_journal.db
 ```
 
-Run it with:
-
-```powershell
-python cfapi_mirror.py
-```
+All paths are relative to the process's current working directory unless otherwise configured in the source.
 
 The local backend maps:
 
 ```text
-./storage
+.\storage\
 ```
 
 to:
 
 ```text
-./mount
+.\mount\
 ```
 
-For example:
+For example, a file stored at:
 
 ```text
 storage\
@@ -110,63 +118,70 @@ mount\
     └── song.flac
 ```
 
-The file in `mount` is a Cloud Files placeholder until Windows requests its contents. At that point, WinFUSE asks the backing store for the requested data and supplies it through CfAPI.
+The file in the mount is represented by a Cloud Files placeholder. Windows requests its contents when the file is accessed, and WinFUSE retrieves the data from the backing store.
 
-## Using WinFUSE as a Module
+The actual file is stored under `.\storage\\` in the standalone example. Files in the mount should be treated as part of the synchronized filesystem, not as an independent disposable cache.
 
-When imported, WinFUSE does not choose or create a backing store.
+## Using WinFUSE as a Python Module
 
-The application provides one:
+When imported, WinFUSE does not select the storage backend automatically. The application supplies a compatible `BackingStore` instance.
+
+For example:
 
 ```python
-import cfapi_mirror
+import winfuse3
 
-class MyBackend(cfapi_mirror.BackingStore):
+class MyBackend(winfuse3.BackingStore):
     def initialize(self):
         ...
 
-    def listdir(self, path):
+    def listdir(self, relative_path):
         ...
 
-    def stat(self, path):
+    def stat(self, relative_path):
         ...
 
-    def open_read(self, path):
+    def open_read(self, relative_path):
         ...
 
-    def write_file_from_local(self, source_path, path):
+    def write_file_from_local(self, source_path, relative_path):
         ...
 
-    def make_directory(self, path):
+    def make_directory(self, relative_path):
         ...
 
-    def lexists(self, path):
+    def lexists(self, relative_path):
         ...
 
-    def delete(self, path, is_directory):
+    def delete(self, relative_path, is_directory):
         ...
 
-    def move(self, source, destination):
+    def move(self, source_relative_path, destination_relative_path):
         ...
 
 backend = MyBackend()
 
-cfapi_mirror.main(
-    r"C:\MyMount",
+# main() takes the backing store first and mount directory second.
+winfuse3.main(
     backend,
+    r"C:\MyMount",
 )
 ```
 
-The application controls both:
+The application controls:
 
-1. Where the Windows mount is created.
-2. Where and how the actual file data is stored.
+1. Where the Windows synchronization root is registered.
+2. Where and how the actual file contents are stored.
+3. How file metadata is retrieved.
+4. How changes are written back to the backing store.
+
+The `main()` function initializes the backend and synchronization journal, registers the sync root, populates the namespace, connects the Cloud Files callback, and starts filesystem monitoring and refresh processing.
 
 ## BackingStore
 
-`BackingStore` is the interface between WinFUSE and the application's storage system.
+`BackingStore` defines the interface between WinFUSE and the application's storage system.
 
-Paths passed to the backend are logical relative paths using `/` as the separator:
+Paths passed to the backend are logical relative paths using forward slashes:
 
 ```text
 Music
@@ -174,19 +189,21 @@ Music/Albums
 Music/Albums/song.flac
 ```
 
-The backend decides how those paths are represented.
+The backend decides how these paths map to its actual storage.
 
-For example, a backend could store data in:
+Possible implementations include:
 
-* A normal filesystem
-* A database
-* Object storage
-* A network filesystem
-* A custom storage engine
-* An encrypted storage layer
-* Any combination of the above
+- A regular filesystem.
+- A database.
+- Object storage.
+- A network filesystem.
+- A remote encrypted storage service.
+- A custom storage engine.
+- Another application-managed storage layer.
 
 ### Required Methods
+
+The current base class provides the following interface:
 
 ```python
 class BackingStore:
@@ -217,56 +234,75 @@ class BackingStore:
     def move(self, source_relative_path, destination_relative_path):
         ...
 
+    def get_hash(self, relative_path):
+        return None
+
     def describe(self):
-        ...
+        return type(self).__name__
 ```
 
-### `stat()`
+The primary filesystem methods must be implemented by a custom backend. `get_hash()` is optional at the interface level, but it is important for detecting changes to existing file contents in the background.
 
-Returns a `BackingStat` object containing the metadata needed to create Cloud Files placeholders:
+### BackingStat
+
+The `stat()` method returns a `BackingStat` instance containing the metadata needed to create and update Windows placeholders.
 
 ```python
-BackingStat(
-    is_directory=True,
-    size=0,
-    creation_time=...,
-    access_time=...,
-    modified_time=...,
+winfuse3.BackingStat(
+    is_directory=False,
+    size=1024,
+    creation_time=0.0,
+    access_time=0.0,
+    modified_time=0.0,
 )
 ```
 
-### `open_read()`
+The timestamps are Unix timestamps expressed in seconds. The provider converts them to Windows FILETIME values when constructing placeholder metadata.
 
-Returns a binary file-like object supporting at least:
+For directories, the size is normally zero.
+
+### open_read()
+
+The `open_read()` method returns a binary file-like object that supports at least:
 
 ```python
-seek(offset)
-read(length)
+stream.seek(offset)
+data = stream.read(length)
 ```
 
-This is used by the `FETCH_DATA` callback to retrieve file contents.
+WinFUSE uses this interface to satisfy `FETCH_DATA` callbacks. The returned stream must provide the requested bytes, or the operation may fail.
 
-### `write_file_from_local()`
+### write_file_from_local()
 
-Receives the physical Windows path of a file that was created or modified in the mount and the logical backing path where it should be stored.
+The `write_file_from_local()` method receives the physical Windows path of a file in the mount and its logical backing path.
 
 ```python
-write_file_from_local(
+backend.write_file_from_local(
     r"C:\MyMount\Music\song.flac",
     "Music/song.flac",
 )
 ```
 
-The backend is responsible for copying, uploading, encrypting, or otherwise storing the data.
+The backend is responsible for copying, uploading, encrypting, or otherwise storing the file contents.
+
+The provider may retry writes when files are still changing. Backends should handle repeated calls safely and should not assume that each invocation corresponds to a unique user action.
+
+### get_hash()
+
+The optional `get_hash()` method returns a digest for a backing file. WinFUSE uses hash information to track content changes and compare local contents with the backing store.
+
+If the backend inherits the default implementation, which returns `None`, hash-based content reconciliation is disabled. Namespace refresh can still discover new or missing paths, but external modifications to the contents of existing backing files cannot be reliably detected through this mechanism.
+
+**Hash compatibility matters:** The current provider computes local file hashes using SHA-256 and represents them as hexadecimal strings. A custom backend's `get_hash()` must return a compatible digest representation for direct comparisons to work correctly.
 
 ## Mount Directory
 
-The mount directory is supplied to `main()`:
+The mount directory is provided to `main()`:
 
 ```python
-cfapi_mirror.main(
-    r"C:\MyMount",
+winfuse3.main(
     backend,
+    r"C:\MyMount",
 )
 ```
 
@@ -278,106 +314,144 @@ For example:
 C:\MyMount
 ```
 
-could be backed by:
+could be backed by remote storage, while the application itself lives at:
 
 ```text
-Remote object storage
+C:\Users\your-user\OneDrive\WinFUSE\
 ```
 
-while the Python application itself could live at:
+The application directory and the mounted synchronization root serve different purposes.
 
-```text
-C:\Users\Dan\OneDrive\WinFUSE\
-```
+**Do not place the actual WinFUSE mount directory inside another cloud provider's sync root.** Nesting one synchronization provider inside another can cause recursive synchronization, conflicting placeholder handling, or unexpected data behavior.
 
-The mount directory should not be placed inside another cloud provider's sync root.
+The same rule applies to OneDrive and other cloud synchronization providers.
 
 ## OneDrive and Other Cloud Storage
 
-The Python application itself can be stored in OneDrive.
+The WinFUSE application code can be stored in OneDrive.
 
 For example:
 
 ```text
 OneDrive\
 └── WinFUSE\
-    ├── cfapi_mirror.py
+    ├── winfuse3.py
     └── app.py
 
 C:\CloudMount\
 └── ...
 ```
 
-This is different from placing the CfAPI mount inside OneDrive.
+Here, OneDrive synchronizes the application files, while WinFUSE registers a separate mount at `C:\CloudMount\\`.
 
-The application code can be stored in OneDrive as long as the actual CfAPI mount is located somewhere outside the OneDrive sync root.
+This is different from placing the WinFUSE mount inside OneDrive itself.
 
-The same principle applies to other filesystem synchronization providers.
+## Cloud Files API Implementation
 
-## Current CfAPI Design
+### Sync Root Registration
 
-The provider currently:
+WinFUSE registers the configured mount directory using `CfRegisterSyncRoot()` and connects the provider through `CfConnectSyncRoot()`.
 
-* Registers a Cloud Files sync root.
-* Creates the initial placeholder namespace before connecting callbacks.
-* Uses `FETCH_DATA` to hydrate files.
-* Uses a full hydration policy.
-* Creates the complete initial namespace during startup.
-* Uses Watchdog to monitor changes made through the mounted filesystem.
-* Synchronizes those changes into the application-provided backing store.
+The current implementation configures full hydration and an always-full population policy. It creates placeholders recursively for the initial backing-store namespace rather than waiting to discover all entries as individual directories are opened.
 
-The Cloud Files API layer is intentionally kept separate from the backing storage layer.
+### Placeholder Creation
 
-## Project Philosophy
+During namespace population, WinFUSE enumerates the backing store and creates Windows placeholders for its entries.
 
-The most important design goal is separation of responsibilities.
+Placeholder metadata includes attributes, file size, timestamps, and a file identity derived from the logical backing path.
 
-WinFUSE handles:
+The provider filters common temporary-file names while enumerating the namespace.
 
-```text
-Windows filesystem
-       ↓
-Cloud Files API
-       ↓
-placeholder/hydration behavior
+### File Hydration
+
+When Windows requests file data, the provider receives a `FETCH_DATA` callback.
+
+The implementation:
+
+1. Resolves the callback's Windows path to a logical backing path.
+2. Determines the requested byte range.
+3. Aligns transfer boundaries as necessary for the Cloud Files API.
+4. Reads the corresponding data from the backing store.
+5. Transfers the data to Windows using `CfExecute()`.
+
+The default fetch chunk size is:
+
+```python
+FETCH_CHUNK_SIZE = 12 * 1024 * 1024
 ```
 
-The application handles:
+Hydration is performed in a background worker thread. If a request fails, the provider attempts to complete it with a Cloud Files failure status.
+
+### Local Filesystem Changes
+
+WinFUSE uses Watchdog to monitor the mounted directory for supported filesystem events:
+
+- File creation.
+- File modification.
+- File deletion.
+- File and directory movement.
+
+These events are translated into corresponding backing-store operations.
+
+The implementation uses an internal-event tracking mechanism to help distinguish provider-driven filesystem changes from user changes. File writes are retried when the file is still changing, and the synchronization journal records operations that may need recovery.
+
+This is a best-effort synchronization mechanism, not a guarantee that every filesystem event is delivered exactly once.
+
+### Remote Namespace Refresh
+
+The provider periodically reconciles the mounted namespace with the backing store. The default refresh interval is five seconds.
+
+It can create placeholders for new backing-store entries and remove stale entries from the mount when appropriate.
+
+Remote changes to the contents of existing files require compatible `get_hash()` support from the backing store. The provider uses hash-based refresh checks to identify changed content and update placeholders.
+
+The refresh mechanism spreads eligible hash checks across successive cycles and adjusts the interval for files that remain unchanged. Consequently, remote content updates may take longer than a single refresh interval to be detected.
+
+## Synchronization Journal and Recovery
+
+WinFUSE stores its synchronization journal in:
 
 ```text
-logical path
-       ↓
-BackingStore
-       ↓
-actual data
+.\sync_journal.db
 ```
 
-This makes the provider reusable without requiring the provider itself to understand the application's storage system.
+The path is defined by `JOURNAL_PATH` in `winfuse3.py` and is relative to the process's current working directory.
 
-## Warning
+The journal tracks pending write, directory creation, delete, and move operations, along with file-hash state used by refresh logic.
 
-This project directly interfaces with Windows Cloud Files API using Python `ctypes`.
+When the provider starts, it attempts to replay pending operations before normal synchronization begins. Operations that fail during replay may remain pending for a future attempt.
 
-That means small changes to native structures, callback definitions, buffer handling, or API parameters can cause failures that are difficult to diagnose.
+The journal is persistent, but its presence does not guarantee conflict-free synchronization. If using a remote backing store, provide suitable retry behavior, consistent metadata, and safe handling of conflicting modifications.
 
-The existing CfAPI implementation should be treated carefully.
+The current Windows provider's journal is not an automatic version-history system and does not guarantee recovery of every change after a process crash.
 
-In other words:
+## Important Implementation Notes
+
+- The provider relies on direct Windows API calls through `ctypes`.
+- Native callback structures, structure sizes, HRESULT handling, and buffer management are sensitive to implementation errors.
+- The provider uses Watchdog and periodic refreshes to synchronize changes.
+- Hash-based file-content refresh requires a backend with compatible `get_hash()` behavior.
+- The standalone backend is a local disk implementation; remote-storage integration is supplied by the application.
+- The mount's placeholder behavior and local disk usage depend on Windows Cloud Files API policies and the state of each file.
+- Cache, journal, and working paths should be kept consistent between program launches.
+
+The Cloud Files API implementation should be modified carefully. Small changes to native structures, callback definitions, memory handling, or API parameters may cause failures that are difficult to diagnose.
 
 ```text
 IT WORKS.
-
 DO NOT TOUCH THE BLACK MAGIC.
 ```
-## winfuse3.py was reused from my winFUSE repository
-```url
+
+## Source Repository
+
+The WinFUSE implementation was reused from my WinFUSE repository:
+
 https://github.com/Daniel523-dev/winFUSE/
-```
 
 ## License
 
-WinFUSE is licensed under the GNU General Public License v3.0.
+WinFUSE is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
 
-See the [LICENSE](LICENSE) file for the complete license text.
+See the `LICENSE` file for the complete license text.
 
 Copyright © 2026 Daniel523-dev.
