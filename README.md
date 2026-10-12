@@ -1,57 +1,69 @@
-# Secure Encrypted SFTP
+# Crypton — Secure Encrypted Remote Storage
 
-Welcome to the Secure File Transfer project. This repository contains a complete, end-to-end encrypted remote file storage ecosystem. It allows you to host a secure file server and mount it on client machines (Windows and Linux) as a native local drive. Files are encrypted and decrypted on the fly in memory, ensuring that your data remains secure both in transit and at rest.
+Crypton is a cross-platform, end-to-end encrypted, self-hosted file storage ecosystem that provides a OneDrive-like experience from the client's perspective while keeping infrastructure under your control. Run the server and clients on Windows or Linux in any combination, and mount remote storage as a native local drive.
+
+Crypton supports asynchronous uploads, transparent file hydration through the Windows Cloud Files API (cfAPI), and FUSE-based Linux mounting with chunked caching. Files are encrypted and decrypted on the fly in memory, while authentication keys are protected with password-based encryption at rest. Crypton uses a custom authentication and networking protocol built on standard cryptographic primitives rather than SSH or conventional file-transfer protocols.
 
 ## Setup and Installation
 
-For detailed instructions on setting up, installing, and configuring the project, please refer to the `SETUP.md` file in the root directory of this repository. Follow the instructions in that document to prepare the environment and get the system running.
+For detailed instructions on setting up, installing, and configuring Crypton, refer to the `SETUP.md` file in the root directory of this repository. Follow the instructions in that document to prepare the environment and get the system running.
 
 ## Project Structure & Documentation
 
-The project is broken down into several modular components. For detailed instructions on how to use, configure, or develop each piece, please refer to their respective README files:
+Crypton is organized into several modular components. For detailed instructions on using, configuring, or developing each component, refer to its respective README file:
 
-* **Server Component** (`server-README.md`): Instructions for running and configuring the secure remote storage backend.
-* **Client Component** (`client-README.md`): Guide for using the Python client API and mounting the remote server as a local drive.
-* **Cryptography** (`Encryption-README.md`): Overview of the cryptographic backbone (Argon2, AES-GCM, ChaCha20, X25519/Ed25519) securing the entire ecosystem.
-* **Networking** (`network-README.md`): Explanation of the custom TCP packet framing and streaming protocol used for zero-knowledge data transfer.
-* **Linux Mount** (`vfs-README.md`): Details on the POSIX-compliant FUSE bridge for Unix-like systems.
-* **Windows Mount** (`winfuse-README.md`): Details on the Windows virtual drive integration, which is powered by the Windows Cloud Files API (`cfAPI`) rather than traditional FUSE.
+* **Server Component** (`server-README.md`): Instructions for running and configuring the remote storage server.
+* **Client Component** (`client-README.md`): Guide to the Python client API and mounting remote storage as a native local drive.
+* **Cryptography** (`Encryption-README.md`): Overview of the cryptographic components, including Argon2id, AES-GCM, X448, Ed448, and BLAKE3.
+* **Networking** (`network-README.md`): Explanation of the custom network packet framing, streaming protocol, and communication mechanisms.
+* **Linux Mount** (`vfs-README.md`): Details on the FUSE-based Linux filesystem integration and chunked caching.
+* **Windows Mount** (`winfuse-README.md`): Details on the Windows virtual drive integration using the Windows Cloud Files API (cfAPI) for features such as transparent file hydration.
 
-## Windows SFTP Client Cache Management
+## Windows Client Cache Management
 
-The Windows SFTP client relies on the Windows Cloud Files API (`cfAPI`) to integrate remote files with the local filesystem. When the client reads from or writes to a file, Windows may cache the file's contents locally, causing the file to occupy disk space on the client machine.
+The Windows Crypton client uses the Windows Cloud Files API (cfAPI) to integrate remote files with the local filesystem. Files can appear in the mounted directory without their complete contents being stored locally. When files are accessed, Windows may hydrate them by downloading their contents, which can cause local disk usage to increase.
 
-To remove these cached files and reclaim disk space:
+To reclaim disk space, use the cache-management procedures documented by the project, where available. Avoid deleting files directly from the mounted directory unless you are certain the operation is safe and intended: doing so may delete files or affect synchronization rather than simply remove cached data.
 
-1. **Stop the Windows SFTP client** to ensure that no files are actively being accessed or modified.
-2. **Navigate to the mount directory** used by the Windows SFTP client.
-3. **Delete the cached files** from the mount directory to remove the locally stored file contents.
+Before performing cache cleanup:
 
-**Note:** Only delete files when the client is stopped and you are certain they are cached files that can be safely removed. Ensure that any local changes have been synchronized with the remote server before deleting files to avoid losing data.
+1. **Stop the Crypton client** to prevent files from being actively accessed or modified.
+2. **Identify the cached data** using the project's supported cache-management procedures.
+3. **Verify synchronization** to ensure local changes have been uploaded before removing any cached contents.
+
+**Note:** The correct cleanup procedure depends on how the file is represented and managed by cfAPI. Do not assume that deleting a file from the mounted directory is equivalent to dehydrat­ing it.
+
+## Client Access Revocation
+
+Crypton stores client authorization material in files on the server. Access for a client can be revoked by deleting its corresponding authorization file.
+
+**Important:** Revocation takes effect when the affected client restarts. Do not treat deleting the file as an immediate termination of an already established session.
 
 ## Optional: TPM Autofill Integration
 
-Optional autofill functionality is provided by the separate Psudo-TPM repository, available at:
+Optional autofill functionality is provided by the separate Psudo-TPM repository:
 
-```url
 https://github.com/Daniel523-dev/Psudo-TPM
-```
 
-This component is not included in this repository and must be obtained separately.
+This component is not included in Crypton and must be obtained separately.
 
-To enable autofill, download `TPM.exe` from the most recent release in the Psudo-TPM repository and download `TPM_client.py`. Place both `TPM.exe` and `TPM_client.py` in the current working directory on the machines where the integration will be used.
+To enable autofill, download `TPM.exe` from the latest release in the Psudo-TPM repository and obtain `TPM_client.py`. Place both files in the current working directory on each machine where the integration will be used.
 
-**Starting the TPM program:**
+### Starting the TPM Program
 
 * **Server:** The server administrator must manually start `TPM.exe` on the server machine to enable server-side TPM autofill functionality.
 * **Client:** Each user must manually start `TPM.exe` on their own computer to enable client-side TPM autofill functionality.
 
-**Independent operation:** The server and client TPM integrations operate independently of each other. Whether the server runs Psudo-TPM does not affect the client's ability to use its own Psudo-TPM integration, and whether the client runs Psudo-TPM does not affect the server's ability to use its own integration. Each side can enable or disable its TPM functionality independently.
+### Independent Operation
 
-The TPM integration is entirely optional and is not required for the core encrypted file storage, network communication, or drive-mounting functionality.
+The server and client TPM integrations operate independently. Whether the server runs Psudo-TPM does not affect the client's ability to use its own integration, and whether the client runs Psudo-TPM does not affect the server's integration.
+
+Each side can enable or disable its TPM functionality independently.
+
+The TPM integration is entirely optional and is not required for Crypton's core encrypted storage, network communication, authentication, or drive-mounting functionality.
 
 ## License
 
-This software is released under the **GNU General Public License v3.0 (GPL-3.0)**.
+Crypton is released under the **GNU General Public License v3.0 (GPL-3.0)**.
 
-Please see the `LICENSE` file for the full text of the license, your rights, and your obligations when using or modifying this software.
+See the `LICENSE` file for the full license text and information about your rights and obligations when using or modifying this software.
