@@ -281,9 +281,3 @@ This integration is not required for normal client operation. See the main proje
 - Windows cfAPI hydration may store file content locally.
 - Linux caching may also use local disk space.
 - Use the supported cache-management process for the appropriate platform rather than deleting files blindly from the mounted directory.
-
-## License
-
-Crypton is released under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-See the `LICENSE` file in the repository for the full license text and information about your rights and obligations when using or modifying this software.
