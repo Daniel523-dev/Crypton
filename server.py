@@ -1,4 +1,4 @@
-import json, os, shutil, time, network, getpass, sys, traceback, socket
+import json, os, shutil, time, network, getpass, sys, traceback, socket, blake3
 SHARED_DIR = os.path.expanduser("~/Shared")
 CHUNK_SIZE = 12 * 1024 * 1024
 if os.name == "nt":
@@ -64,8 +64,7 @@ class FileServer:
         if not password:raise ValueError("Server password is required.")
         self.shared_dir = SHARED_DIR
         os.makedirs(self.shared_dir, exist_ok=True)
-        try:
-            self.server = network.TCPServer(host=host,port=port,password=password,auth_key_password=auth_key_password,auth_key_dir=key_dir,salt_file=salt_file,on_exchange=self.handle_exchange,)
+        try:self.server = network.TCPServer(host=host,port=port,password=password,auth_key_password=auth_key_password,auth_key_dir=key_dir,salt_file=salt_file,on_exchange=self.handle_exchange,)
         except Exception as e:traceback.print_exception(e);raise OSError
         print(f"[*] File Server active on tcp://{host}:{port} | Serving: {self.shared_dir}")
     def handle_exchange(self, server_inst, eid, data, cid):
@@ -112,6 +111,19 @@ class FileServer:
                         chunk = f.read(length)
                     resp = b"\x00" + chunk
                 server_inst.send(resp,eid=eid,client_id=cid,)
+            elif cmd == "get_hash":
+                rel_path = meta.get("path", "")
+                target = safe_path(self.shared_dir, rel_path)
+                if not os.path.isfile(target):resp = b"\x01File not found"
+                else:
+                    with open(target, "rb") as f:
+                        hasher=blake3.blake3()
+                        while True:
+                            chunk = f.read(1024 * 1024 * 16)
+                            if not chunk:break
+                            hasher.update(chunk)
+                    resp = b"\x00" + hasher.digest(64)
+                server_inst.send(resp,eid=eid,client_id=cid,)
             elif cmd == "upload_chunk":
                 rel_path = meta.get("path", "")
                 target = safe_path(self.shared_dir, rel_path)
@@ -151,6 +163,18 @@ class FileServer:
                     else:os.remove(target)
                     resp = make_packet({"status": "ok",})
                 server_inst.send(resp,eid=eid,client_id=cid,)
+            elif cmd == "truncate":
+                rel_path = meta.get("path", "")
+                target = safe_path(self.shared_dir, rel_path)
+                size = meta.get("size")
+                if isinstance(size, bool) or not isinstance(size, int) or size < 0:resp = make_packet({"status": "error", "message": "Invalid truncate size"})
+                elif not os.path.isfile(target):resp = make_packet({"status": "error","message": "File does not exist or is not a regular file",})
+                else:
+                    with open(target, "r+b") as f:
+                        f.truncate(size)
+                        f.flush()
+                    resp = make_packet({"status": "ok","size": size,})
+                server_inst.send(resp, eid=eid, client_id=cid,)
             elif cmd == "mkdir":
                 target = safe_path(self.shared_dir,meta.get("path", ""),)
                 os.makedirs(target, exist_ok=True)

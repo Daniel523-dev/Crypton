@@ -104,12 +104,11 @@ class RemoteStorage:
             if not chunk:break
             out.extend(chunk)
         return bytes(out)
-    def write(self, key, content):
-        if not content:
-            self.write_chunk(key, 0, b"")
-            return
-        for offset in range(0, len(content), CHUNK_SIZE):
-            if not self.write_chunk(key,offset,content[offset:offset + CHUNK_SIZE],):raise IOError("Failed to upload file chunk")
+    def truncate(self, key, size):
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:raise ValueError("Truncate size must be a non-negative integer")
+        r = self._request({"cmd": "truncate","path": key,"size": size,})
+        if r.get("status") != "ok":raise OSError(r.get("message", f"Failed to truncate remote file: {key!r}"))
+        return r.get("size", size)
     def delete(self, key, is_directory=None):
         if self.callbacks["delete"]:self.callbacks["delete"](key)
         self._request({"cmd": "delete", "path": key})
@@ -137,7 +136,7 @@ class RemoteStorage:
             eid = self.client.send(req)
             res = self.client.recv(eid, 60)
         if not res or res[:1] != b"\x00":return None
-        return res[1:].hex()
+        return res[1:]
     def open_read(self, relative_path):return RemoteReader(self, relative_path, self.get_size(relative_path))
     def write_file_from_local(self, source_path, relative_path):
         offset = 0
@@ -145,7 +144,9 @@ class RemoteStorage:
             while chunk := f.read(CHUNK_SIZE):
                 if not self.write_chunk(relative_path, offset, chunk):raise IOError("Failed to upload file chunk")
                 offset += len(chunk)
-        if offset == 0:self.write_chunk(relative_path, 0, b"")
+        if offset == 0:
+            if not self.write_chunk(relative_path, 0, b""):raise IOError("Failed to create empty remote file")
+        self.truncate(relative_path, offset)
     def make_directory(self, relative_path):self.mkdir(relative_path)
     def lexists(self, relative_path):return self.exists(relative_path)
     def move(self, source_relative_path, destination_relative_path):

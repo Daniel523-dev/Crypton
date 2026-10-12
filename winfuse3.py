@@ -30,92 +30,122 @@ class BackingStore:
     def move(self, source_relative_path, destination_relative_path):raise NotImplementedError
     def get_hash(self, relative_path):return None  # Optional hash function
     def describe(self):return type(self).__name__
-cldapi = ctypes.WinDLL("cldapi.dll", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
-MEM_COMMIT = 0x1000
-MEM_RESERVE = 0x2000
-PAGE_READWRITE = 0x04
-MEM_RELEASE = 0x8000
-FILE_ATTRIBUTE_NORMAL = 0x00000080
-FILE_ATTRIBUTE_DIRECTORY = 0x00000010
-FILE_ATTRIBUTE_READONLY = 0x00000001
-INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
-FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
-CF_CALLBACK_TYPE_FETCH_DATA = 0
-CF_CALLBACK_TYPE_VALIDATE_DATA = 1
-CF_CALLBACK_TYPE_CANCEL_FETCH_DATA = 2
-CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS = 3
-CF_CALLBACK_TYPE_CANCEL_FETCH_PLACEHOLDERS = 4
-CF_CALLBACK_TYPE_NONE = 0xFFFFFFFF
-CF_OPERATION_TYPE_TRANSFER_DATA = 0
-CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS = 4
-CF_HYDRATION_POLICY_PARTIAL = 0
-CF_HYDRATION_POLICY_PROGRESSIVE = 1
-CF_HYDRATION_POLICY_FULL = 2
-CF_HYDRATION_POLICY_ALWAYS_FULL = 3
-CF_POPULATION_POLICY_PARTIAL = 0
-CF_POPULATION_POLICY_FULL = 2
-CF_POPULATION_POLICY_ALWAYS_FULL = 3
-CF_PLACEHOLDER_CREATE_FLAG_NONE = 0x00000000
-CF_PLACEHOLDER_CREATE_FLAG_DISABLE_ON_DEMAND_POPULATION = 0x00000001
-CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC = 0x00000002
-CF_PLACEHOLDER_CREATE_FLAG_ALWAYS_FULL = 0x00000004
-CF_CREATE_FLAG_NONE = 0x00000000
-CF_CREATE_FLAG_STOP_ON_ERROR = 0x00000001
-CF_CONNECT_FLAG_NONE = 0x00000000
-CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO = 0x00000002
-CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH = 0x00000004
-STATUS_SUCCESS = 0
-STATUS_UNSUCCESSFUL = -1073741823
-HYDRATION_POLICY = CF_HYDRATION_POLICY_FULL
-POPULATION_POLICY = CF_POPULATION_POLICY_ALWAYS_FULL
-def hresult_unsigned(hr):return int(hr) & 0xFFFFFFFF
+cldapi=ctypes.WinDLL("cldapi.dll",use_last_error=True)
+kernel32=ctypes.WinDLL("kernel32.dll",use_last_error=True)
+ntdll=ctypes.WinDLL("ntdll.dll")
+ntdll.RtlSetProcessPlaceholderCompatibilityMode.argtypes=[ctypes.c_byte]
+ntdll.RtlSetProcessPlaceholderCompatibilityMode.restype=ctypes.c_byte
+if ntdll.RtlSetProcessPlaceholderCompatibilityMode(2)<0:raise RuntimeError("Failed to expose Cloud Files placeholders")
+MEM_COMMIT=0x1000
+MEM_RESERVE=0x2000
+PAGE_READWRITE=0x04
+MEM_RELEASE=0x8000
+PAGE_SIZE=4096
+CF_EOF=-1
+FILE_ATTRIBUTE_NORMAL=0x80
+FILE_ATTRIBUTE_DIRECTORY=0x10
+INVALID_FILE_ATTRIBUTES=0xFFFFFFFF
+FILE_ATTRIBUTE_REPARSE_POINT=0x400
+CF_CALLBACK_TYPE_FETCH_DATA=0
+CF_CALLBACK_TYPE_NONE=0xFFFFFFFF
+CF_OPERATION_TYPE_TRANSFER_DATA=0
+CF_UPDATE_FLAG_NONE=0
+CF_UPDATE_FLAG_VERIFY_IN_SYNC=0x01
+CF_UPDATE_FLAG_MARK_IN_SYNC=0x02
+CF_UPDATE_FLAG_DEHYDRATE=0x04
+CF_UPDATE_FLAG_CLEAR_IN_SYNC=0x40
+CF_UPDATE_FLAG_PASSTHROUGH_FS_METADATA=0x100
+CF_HYDRATION_POLICY_FULL=2
+CF_POPULATION_POLICY_ALWAYS_FULL=3
+HYDRATION_POLICY=CF_HYDRATION_POLICY_FULL
+POPULATION_POLICY=CF_POPULATION_POLICY_ALWAYS_FULL
+CF_PLACEHOLDER_CREATE_FLAG_DISABLE_ON_DEMAND_POPULATION=1
+CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC=2
+CF_CREATE_FLAG_NONE=0
+CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO=2
+CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH=4
+CF_OPEN_FILE_FLAG_EXCLUSIVE=1
+CF_OPEN_FILE_FLAG_WRITE_ACCESS=2
+CF_IN_SYNC_STATE_NOT_IN_SYNC=0
+CF_IN_SYNC_STATE_IN_SYNC=1
+CF_SET_IN_SYNC_FLAG_NONE=0
+STATUS_SUCCESS=0
+STATUS_UNSUCCESSFUL=-1073741823
+STATUS_CLOUD_FILE_UNSUCCESSFUL=ctypes.c_int32(0xC000CF00).value
+FILE_READ_ATTRIBUTES=0x80
+CF_PLACEHOLDER_INFO_STANDARD=1
+FILE_READ_ATTRIBUTES=0x80
+FILE_SHARE_READ=0x01
+FILE_SHARE_WRITE=0x02
+FILE_SHARE_DELETE=0x04
+OPEN_EXISTING=3
+INVALID_HANDLE_VALUE=ctypes.c_void_p(-1).value
+def hresult_unsigned(hr):return int(hr)&0xFFFFFFFF
 def hresult_hex(hr):return f"0x{hresult_unsigned(hr):08X}"
-def check_hresult(hr, operation):
-    hr_int = int(hr)
-    if hr_int != 0:raise OSError(f"{operation} failed with HRESULT {hresult_hex(hr_int)}")
-kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD]
-kernel32.VirtualAlloc.restype = ctypes.c_void_p
-kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD]
-kernel32.VirtualFree.restype = wintypes.BOOL
-kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
-kernel32.GetFileAttributesW.restype = wintypes.DWORD
-kernel32.DeleteFileW.argtypes = [wintypes.LPCWSTR]
-kernel32.DeleteFileW.restype = wintypes.BOOL
-kernel32.RemoveDirectoryW.argtypes = [wintypes.LPCWSTR]
-kernel32.RemoveDirectoryW.restype = wintypes.BOOL
-cldapi.CfRegisterSyncRoot.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD]
-cldapi.CfRegisterSyncRoot.restype = ctypes.HRESULT
-cldapi.CfUnregisterSyncRoot.argtypes = [wintypes.LPCWSTR]
-cldapi.CfUnregisterSyncRoot.restype = ctypes.HRESULT
-cldapi.CfConnectSyncRoot.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_int64)]
-cldapi.CfConnectSyncRoot.restype = ctypes.HRESULT
-cldapi.CfDisconnectSyncRoot.argtypes = [ctypes.c_int64]
-cldapi.CfDisconnectSyncRoot.restype = ctypes.HRESULT
-cldapi.CfExecute.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-cldapi.CfExecute.restype = ctypes.HRESULT
-class GUID(ctypes.Structure):_fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
-class LARGE_INTEGER(ctypes.Union):_fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG), ("QuadPart", ctypes.c_int64)]
-class FILE_BASIC_INFO(ctypes.Structure):_fields_ = [("CreationTime", LARGE_INTEGER), ("LastAccessTime", LARGE_INTEGER), ("LastWriteTime", LARGE_INTEGER), ("ChangeTime", LARGE_INTEGER), ("FileAttributes", wintypes.DWORD), ("Reserved", wintypes.DWORD)]
-class CF_FS_METADATA(ctypes.Structure):_fields_ = [("BasicInfo", FILE_BASIC_INFO), ("FileSize", LARGE_INTEGER)]
-class CF_PLACEHOLDER_CREATE_INFO(ctypes.Structure):_fields_ = [("RelativeFileName", wintypes.LPCWSTR), ("FsMetadata", CF_FS_METADATA), ("FileIdentity", ctypes.c_void_p), ("FileIdentityLength", wintypes.DWORD), ("Flags", wintypes.DWORD), ("Result", wintypes.LONG), ("CreateUsn", ctypes.c_int64)]
-class CF_HYDRATION_POLICY(ctypes.Structure):_fields_ = [("Primary", wintypes.USHORT), ("Modifier", wintypes.USHORT)]
-class CF_POPULATION_POLICY(ctypes.Structure):_fields_ = [("Primary", wintypes.USHORT), ("Modifier", wintypes.USHORT)]
-class CF_SYNC_POLICIES(ctypes.Structure):_fields_ = [("StructSize", wintypes.ULONG), ("Hydration", CF_HYDRATION_POLICY), ("Population", CF_POPULATION_POLICY), ("InSync", wintypes.ULONG), ("HardLink", wintypes.ULONG), ("PlaceholderManagement", wintypes.ULONG)]
-class CF_SYNC_REGISTRATION(ctypes.Structure):_fields_ = [("StructSize", wintypes.ULONG), ("ProviderName", wintypes.LPCWSTR), ("ProviderVersion", wintypes.LPCWSTR), ("SyncRootIdentity", ctypes.c_void_p), ("SyncRootIdentityLength", wintypes.DWORD), ("FileIdentity", ctypes.c_void_p), ("FileIdentityLength", wintypes.DWORD), ("ProviderId", GUID)]
-class CF_CALLBACK_REGISTRATION(ctypes.Structure):_fields_ = [("Type", wintypes.DWORD), ("Callback", ctypes.c_void_p)]
-class CF_CALLBACK_INFO(ctypes.Structure):_fields_ = [("StructSize", wintypes.DWORD), ("ConnectionKey", ctypes.c_int64), ("CallbackContext", ctypes.c_void_p), ("VolumeGuidName", wintypes.LPCWSTR), ("VolumeDosName", wintypes.LPCWSTR), ("VolumeSerialNumber", wintypes.DWORD), ("SyncRootFileId", LARGE_INTEGER), ("SyncRootIdentity", ctypes.c_void_p), ("SyncRootIdentityLength", wintypes.DWORD), ("FileId", LARGE_INTEGER), ("FileSize", LARGE_INTEGER), ("FileIdentity", ctypes.c_void_p), ("FileIdentityLength", wintypes.DWORD), ("NormalizedPath", wintypes.LPCWSTR), ("TransferKey", ctypes.c_int64), ("PriorityHint", ctypes.c_ubyte), ("CorrelationVector", ctypes.c_void_p), ("ProcessInfo", ctypes.c_void_p), ("RequestKey", ctypes.c_int64)]
-class _FETCH_DATA_PARAMS(ctypes.Structure):_fields_ = [("Flags", wintypes.DWORD), ("Padding", wintypes.DWORD), ("RequiredFileOffset", LARGE_INTEGER), ("RequiredLength", LARGE_INTEGER), ("OptionalFileOffset", LARGE_INTEGER), ("OptionalLength", LARGE_INTEGER), ("LastDehydrationTime", LARGE_INTEGER), ("LastDehydrationReason", wintypes.DWORD)]
-class _CF_CALLBACK_PARAMETERS_UNION(ctypes.Union):_fields_ = [("FetchData", _FETCH_DATA_PARAMS)]
-class CF_CALLBACK_PARAMETERS(ctypes.Structure):_fields_ = [("ParamSize", wintypes.ULONG), ("Union", _CF_CALLBACK_PARAMETERS_UNION)]
-class _TRANSFER_DATA(ctypes.Structure):_fields_ = [("Flags", wintypes.DWORD), ("CompletionStatus", wintypes.LONG), ("Buffer", ctypes.c_void_p), ("Offset", LARGE_INTEGER), ("Length", LARGE_INTEGER)]
-class _CF_OPERATION_PARAMETERS_UNION(ctypes.Union):_fields_ = [("TransferData", _TRANSFER_DATA)]
-class CF_OPERATION_PARAMETERS(ctypes.Structure):_fields_ = [("ParamSize", wintypes.ULONG), ("Union", _CF_OPERATION_PARAMETERS_UNION)]
-class CF_OPERATION_INFO(ctypes.Structure):_fields_ = [("StructSize", wintypes.ULONG), ("Type", wintypes.ULONG), ("ConnectionKey", ctypes.c_int64), ("TransferKey", ctypes.c_int64), ("CorrelationVector", ctypes.c_void_p), ("SyncStatus", ctypes.c_void_p), ("RequestKey", ctypes.c_int64)]
-TRANSFER_DATA_PARAM_SIZE = (CF_OPERATION_PARAMETERS.Union.offset + ctypes.sizeof(_TRANSFER_DATA))
-cldapi.CfCreatePlaceholders.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(CF_PLACEHOLDER_CREATE_INFO), wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-cldapi.CfCreatePlaceholders.restype = ctypes.HRESULT
-CF_CALLBACK_FUNC = ctypes.WINFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+def check_hresult(hr,operation):
+    hr=int(hr)
+    if hr!=0:raise OSError(f"{operation} failed with HRESULT {hresult_hex(hr)}")
+class Node(ctypes.Structure):pass
+Node._fields_=[("value",ctypes.c_int),("next",ctypes.POINTER(Node))]
+kernel32.VirtualAlloc.argtypes=[ctypes.c_void_p,ctypes.c_size_t,wintypes.DWORD,wintypes.DWORD]
+kernel32.VirtualAlloc.restype=ctypes.c_void_p
+kernel32.VirtualFree.argtypes=[ctypes.c_void_p,ctypes.c_size_t,wintypes.DWORD]
+kernel32.VirtualFree.restype=wintypes.BOOL
+kernel32.GetFileAttributesW.argtypes=[wintypes.LPCWSTR]
+kernel32.GetFileAttributesW.restype=wintypes.DWORD
+kernel32.DeleteFileW.argtypes=[wintypes.LPCWSTR]
+kernel32.DeleteFileW.restype=wintypes.BOOL
+kernel32.RemoveDirectoryW.argtypes=[wintypes.LPCWSTR]
+kernel32.RemoveDirectoryW.restype=wintypes.BOOL
+kernel32.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p]
+kernel32.CreateFileW.restype=wintypes.HANDLE
+kernel32.CloseHandle.argtypes=[wintypes.HANDLE]
+kernel32.CloseHandle.restype=wintypes.BOOL
+cldapi.CfOpenFileWithOplock.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,ctypes.POINTER(ctypes.c_void_p)]
+cldapi.CfOpenFileWithOplock.restype=ctypes.HRESULT
+cldapi.CfCloseHandle.argtypes=[ctypes.c_void_p]
+cldapi.CfCloseHandle.restype=None
+cldapi.CfUpdatePlaceholder.argtypes=[wintypes.HANDLE,ctypes.c_void_p,ctypes.c_void_p,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.POINTER(ctypes.c_int64),ctypes.c_void_p]
+cldapi.CfUpdatePlaceholder.restype=ctypes.HRESULT
+cldapi.CfSetInSyncState.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.DWORD,ctypes.POINTER(ctypes.c_int64)]
+cldapi.CfSetInSyncState.restype=ctypes.HRESULT
+cldapi.CfRegisterSyncRoot.argtypes=[wintypes.LPCWSTR,ctypes.c_void_p,ctypes.c_void_p,wintypes.DWORD]
+cldapi.CfRegisterSyncRoot.restype=ctypes.HRESULT
+cldapi.CfUnregisterSyncRoot.argtypes=[wintypes.LPCWSTR]
+cldapi.CfUnregisterSyncRoot.restype=ctypes.HRESULT
+cldapi.CfConnectSyncRoot.argtypes=[wintypes.LPCWSTR,ctypes.c_void_p,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(ctypes.c_int64)]
+cldapi.CfConnectSyncRoot.restype=ctypes.HRESULT
+cldapi.CfDisconnectSyncRoot.argtypes=[ctypes.c_int64]
+cldapi.CfDisconnectSyncRoot.restype=ctypes.HRESULT
+cldapi.CfExecute.argtypes=[ctypes.c_void_p,ctypes.c_void_p]
+cldapi.CfExecute.restype=ctypes.HRESULT
+class GUID(ctypes.Structure):_fields_=[("Data1",wintypes.DWORD),("Data2",wintypes.WORD),("Data3",wintypes.WORD),("Data4",ctypes.c_ubyte*8)]
+class LARGE_INTEGER(ctypes.Union):_fields_=[("LowPart",wintypes.DWORD),("HighPart",wintypes.LONG),("QuadPart",ctypes.c_int64)]
+class FILE_BASIC_INFO(ctypes.Structure):_fields_=[("CreationTime",LARGE_INTEGER),("LastAccessTime",LARGE_INTEGER),("LastWriteTime",LARGE_INTEGER),("ChangeTime",LARGE_INTEGER),("FileAttributes",wintypes.DWORD),("Reserved",wintypes.DWORD)]
+class CF_FS_METADATA(ctypes.Structure):_fields_=[("BasicInfo",FILE_BASIC_INFO),("FileSize",LARGE_INTEGER)]
+class CF_PLACEHOLDER_CREATE_INFO(ctypes.Structure):_fields_=[("RelativeFileName",wintypes.LPCWSTR),("FsMetadata",CF_FS_METADATA),("FileIdentity",ctypes.c_void_p),("FileIdentityLength",wintypes.DWORD),("Flags",wintypes.DWORD),("Result",wintypes.LONG),("CreateUsn",ctypes.c_int64)]
+class CF_HYDRATION_POLICY(ctypes.Structure):_fields_=[("Primary",wintypes.USHORT),("Modifier",wintypes.USHORT)]
+class CF_POPULATION_POLICY(ctypes.Structure):_fields_=[("Primary",wintypes.USHORT),("Modifier",wintypes.USHORT)]
+class CF_SYNC_POLICIES(ctypes.Structure):_fields_=[("StructSize",wintypes.ULONG),("Hydration",CF_HYDRATION_POLICY),("Population",CF_POPULATION_POLICY),("InSync",wintypes.ULONG),("HardLink",wintypes.ULONG),("PlaceholderManagement",wintypes.ULONG)]
+class CF_SYNC_REGISTRATION(ctypes.Structure):_fields_=[("StructSize",wintypes.ULONG),("ProviderName",wintypes.LPCWSTR),("ProviderVersion",wintypes.LPCWSTR),("SyncRootIdentity",ctypes.c_void_p),("SyncRootIdentityLength",wintypes.DWORD),("FileIdentity",ctypes.c_void_p),("FileIdentityLength",wintypes.DWORD),("ProviderId",GUID)]
+class CF_CALLBACK_REGISTRATION(ctypes.Structure):_fields_=[("Type",wintypes.DWORD),("Callback",ctypes.c_void_p)]
+class CF_CALLBACK_INFO(ctypes.Structure):_fields_=[("StructSize",wintypes.DWORD),("ConnectionKey",ctypes.c_int64),("CallbackContext",ctypes.c_void_p),("VolumeGuidName",wintypes.LPCWSTR),("VolumeDosName",wintypes.LPCWSTR),("VolumeSerialNumber",wintypes.DWORD),("SyncRootFileId",LARGE_INTEGER),("SyncRootIdentity",ctypes.c_void_p),("SyncRootIdentityLength",wintypes.DWORD),("FileId",LARGE_INTEGER),("FileSize",LARGE_INTEGER),("FileIdentity",ctypes.c_void_p),("FileIdentityLength",wintypes.DWORD),("NormalizedPath",wintypes.LPCWSTR),("TransferKey",ctypes.c_int64),("PriorityHint",ctypes.c_ubyte),("CorrelationVector",ctypes.c_void_p),("ProcessInfo",ctypes.c_void_p),("RequestKey",ctypes.c_int64)]
+class _FETCH_DATA_PARAMS(ctypes.Structure):_fields_=[("Flags",wintypes.DWORD),("Padding",wintypes.DWORD),("RequiredFileOffset",LARGE_INTEGER),("RequiredLength",LARGE_INTEGER),("OptionalFileOffset",LARGE_INTEGER),("OptionalLength",LARGE_INTEGER),("LastDehydrationTime",LARGE_INTEGER),("LastDehydrationReason",wintypes.DWORD)]
+class _CF_CALLBACK_PARAMETERS_UNION(ctypes.Union):_fields_=[("FetchData",_FETCH_DATA_PARAMS)]
+class CF_CALLBACK_PARAMETERS(ctypes.Structure):_fields_=[("ParamSize",wintypes.ULONG),("Union",_CF_CALLBACK_PARAMETERS_UNION)]
+class _TRANSFER_DATA(ctypes.Structure):_fields_=[("Flags",wintypes.DWORD),("CompletionStatus",wintypes.LONG),("Buffer",ctypes.c_void_p),("Offset",LARGE_INTEGER),("Length",LARGE_INTEGER)]
+class _CF_OPERATION_PARAMETERS_UNION(ctypes.Union):_fields_=[("TransferData",_TRANSFER_DATA)]
+class CF_OPERATION_PARAMETERS(ctypes.Structure):_fields_=[("ParamSize",wintypes.ULONG),("Union",_CF_OPERATION_PARAMETERS_UNION)]
+class CF_OPERATION_INFO(ctypes.Structure):_fields_=[("StructSize",wintypes.ULONG),("Type",wintypes.ULONG),("ConnectionKey",ctypes.c_int64),("TransferKey",ctypes.c_int64),("CorrelationVector",ctypes.c_void_p),("SyncStatus",ctypes.c_void_p),("RequestKey",ctypes.c_int64)]
+class CF_PLACEHOLDER_STANDARD_INFO(ctypes.Structure):_fields_=[("OnDiskDataSize",LARGE_INTEGER),("ValidatedDataSize",LARGE_INTEGER),("ModifiedDataSize",LARGE_INTEGER),("PropertiesSize",LARGE_INTEGER),("PinState",wintypes.DWORD),("InSyncState",wintypes.DWORD),("FileId",LARGE_INTEGER),("SyncRootFileId",LARGE_INTEGER),("FileIdentityLength",wintypes.DWORD),("FileIdentity",ctypes.c_ubyte*1)]
+cldapi.CfGetPlaceholderInfo.argtypes=[wintypes.HANDLE,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]
+cldapi.CfGetPlaceholderInfo.restype=ctypes.HRESULT
+TRANSFER_DATA_PARAM_SIZE=CF_OPERATION_PARAMETERS.Union.offset+ctypes.sizeof(_TRANSFER_DATA)
+cldapi.CfCreatePlaceholders.argtypes=[wintypes.LPCWSTR,ctypes.POINTER(CF_PLACEHOLDER_CREATE_INFO),wintypes.DWORD,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]
+cldapi.CfCreatePlaceholders.restype=ctypes.HRESULT
+CF_OPERATION_INFO_PTR=ctypes.POINTER(CF_OPERATION_INFO)
+CF_CALLBACK_FUNC=ctypes.WINFUNCTYPE(None,ctypes.c_void_p,ctypes.c_void_p)
+refresh_counter=0
 def create_guid():
     value = uuid.uuid4()
     guid = GUID()
@@ -171,241 +201,388 @@ def build_placeholder_info(backend_directory, entry_name, st):
     placeholder.Result = 0
     placeholder.CreateUsn = 0
     return placeholder, name_buffer, identity_buffer, relative_identity
-def create_single_placeholder(backend, backend_directory, entry_name, mount_directory):
-    if is_temporary_file(entry_name):return
+def hash_local_file(path):
+    h=hashlib.sha256()
+    with open(path,"rb") as f:
+        for chunk in iter(lambda:f.read(1024*1024*16),b""):h.update(chunk)
+    return h.hexdigest()
+def get_local_hash(path):
+    attrs=get_win_attributes(path)
+    if attrs is None or attrs&FILE_ATTRIBUTE_DIRECTORY:return None
+    if attrs&FILE_ATTRIBUTE_REPARSE_POINT:
+        handle=kernel32.CreateFileW(path,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,None,OPEN_EXISTING,0,None)
+        if not handle or handle==INVALID_HANDLE_VALUE:return None
+        try:
+            buf=ctypes.create_string_buffer(8192)
+            returned=wintypes.DWORD()
+            hr=cldapi.CfGetPlaceholderInfo(handle,CF_PLACEHOLDER_INFO_STANDARD,buf,len(buf),ctypes.byref(returned))
+            if hr!=0:return None
+            info=ctypes.cast(buf,ctypes.POINTER(CF_PLACEHOLDER_STANDARD_INFO)).contents
+            if info.OnDiskDataSize.QuadPart<os.path.getsize(path) and info.ModifiedDataSize.QuadPart==0:return None
+        finally:kernel32.CloseHandle(handle)
+    return hash_local_file(path)
+def create_single_placeholder(backend,backend_directory,entry_name,mount_directory,mark_internal=None,):
+    if is_temporary_file(entry_name):return False
     backend_path = join_backend_path(backend_directory, entry_name)
     st = backend.stat(backend_path)
-    placeholder, name_buffer, identity_buffer, relative_identity = build_placeholder_info(backend_directory, entry_name, st)
-    array_type = CF_PLACEHOLDER_CREATE_INFO * 1
-    placeholder_array = array_type(placeholder)
+    placeholder,name_buffer,identity_buffer,relative_identity = build_placeholder_info(backend_directory, entry_name, st)
+    placeholder_array = (CF_PLACEHOLDER_CREATE_INFO * 1)(placeholder)
     processed = wintypes.DWORD(0)
-    hr = cldapi.CfCreatePlaceholders(ctypes.c_wchar_p(mount_directory), placeholder_array, 1, CF_CREATE_FLAG_NONE, ctypes.byref(processed))
-    check_hresult(hr, f"CfCreatePlaceholders({mount_directory})")
+    hr = cldapi.CfCreatePlaceholders(ctypes.c_wchar_p(mount_directory),placeholder_array,1,CF_CREATE_FLAG_NONE,ctypes.byref(processed),)
+    check_hresult(hr, f"CfCreatePlaceholders({backend_path})")
+    if processed.value != 1:raise OSError(f"CfCreatePlaceholders processed {processed.value}/1 entries for {backend_path}")
+    result = int(placeholder_array[0].Result)
+    if result != 0:raise OSError(f"Placeholder creation failed for {backend_path}: NTSTATUS 0x{result & 0xFFFFFFFF:08X}")
+    if mark_internal is not None:mark_internal(os.path.join(mount_directory, entry_name))
+    return True
 def remove_stale_mount_entry(path, mark_internal=None):
     path = os.path.abspath(path)
+    attrs = get_win_attributes(path)
+    if attrs is None:return True
     try:
-        attrs = get_win_attributes(path)
-        if attrs is None:return True
-        if mark_internal is not None:mark_internal(path)
         if attrs & FILE_ATTRIBUTE_DIRECTORY:
             try:children = os.listdir(path)
             except OSError:return False
-            success = True
             for name in children:
-                if not remove_stale_mount_entry(os.path.join(path, name), mark_internal):success = False
-            if not success:return False
+                child = os.path.join(path, name)
+                if not remove_stale_mount_entry(child, mark_internal):return False
+            if mark_internal is not None:mark_internal(path, True)
             ok = kernel32.RemoveDirectoryW(path)
-        else:ok = kernel32.DeleteFileW(path)
-        return bool(ok)
-    except Exception:return False
-def update_mount_file_from_server(backend, backend_path, mount_path, st, mark_internal):
-    if mark_internal is not None:mark_internal(mount_path)
-    backend_directory = os.path.dirname(backend_path).replace("\\", "/")
-    if backend_directory == ".":backend_directory = ""
-    entry_name = os.path.basename(backend_path)
-    mount_directory = os.path.dirname(mount_path)
+        else:
+            if mark_internal is not None:mark_internal(path, True)
+            ok = kernel32.DeleteFileW(path)
+        if not ok:
+            print(f"Failed to remove stale mount entry: {path}; Win32 error={ctypes.get_last_error()}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"Error removing stale entry {path}: {exc}")
+        return False
+def set_mount_file_sync_state(mount_path, in_sync=True):
     attrs = get_win_attributes(mount_path)
-    if attrs == INVALID_FILE_ATTRIBUTES:
-        if st.is_directory:return
-        create_single_placeholder(backend, backend_directory, entry_name, mount_directory)
-        return
-    is_placeholder = bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
-    if is_placeholder:
-        if mark_internal is not None:mark_internal(mount_path)
-        kernel32.DeleteFileW(ctypes.c_wchar_p(mount_path))
-        create_single_placeholder(backend, backend_directory, entry_name, mount_directory)
-        return
+    if attrs is None:return False
+    if not (attrs & FILE_ATTRIBUTE_REPARSE_POINT):return False
+    handle = ctypes.c_void_p()
+    hr = cldapi.CfOpenFileWithOplock(ctypes.c_wchar_p(mount_path),CF_OPEN_FILE_FLAG_WRITE_ACCESS,ctypes.byref(handle),)
+    if hr != 0 or not handle.value:
+        print(f"CfOpenFileWithOplock failed for {mount_path}: {hresult_hex(hr)}")
+        return False
     try:
-        mtime = os.path.getmtime(mount_path)
-        if time.time() - mtime < 10.0:return
-    except Exception:pass
-    temp_path = mount_path + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        state = 1 if in_sync else 0
+        hr = cldapi.CfSetInSyncState(handle,state,0,None,)
+        if hr != 0:
+            print(f"CfSetInSyncState failed for {mount_path}: {hresult_hex(hr)}")
+            return False
+        return True
+    finally:cldapi.CfCloseHandle(handle)
+def update_mount_file_from_server(backend,backend_path,mount_path,mark_internal):
+    try:st=backend.stat(backend_path)
+    except Exception as e:
+        print(f"Cannot stat {backend_path}: {e}")
+        return False
+    if st.is_directory:return False
+    attrs=get_win_attributes(mount_path)
+    parent=os.path.dirname(mount_path)
+    backend_dir=os.path.dirname(backend_path).replace("\\","/")
+    if backend_dir==".":backend_dir=""
+    name=os.path.basename(backend_path)
+    if attrs is None:
+        try:
+            os.makedirs(parent,exist_ok=True)
+            return create_single_placeholder(backend,backend_dir,name,parent,mark_internal)
+        except Exception as e:
+            print(f"Cannot create placeholder for {backend_path}: {e}")
+            return False
+    if not attrs&FILE_ATTRIBUTE_REPARSE_POINT:
+        if not remove_stale_mount_entry(mount_path,mark_internal):return False
+        try:return create_single_placeholder(backend,backend_dir,name,parent,mark_internal)
+        except Exception as e:
+            print(f"Cannot replace local file with placeholder {mount_path}: {e}")
+            return False
+    handle=ctypes.c_void_p()
+    hr=cldapi.CfOpenFileWithOplock(mount_path,CF_OPEN_FILE_FLAG_EXCLUSIVE|CF_OPEN_FILE_FLAG_WRITE_ACCESS,ctypes.byref(handle))
+    if hr!=0 or not handle.value:
+        print(f"Cannot open placeholder {mount_path}: {hresult_hex(hr)}")
+        return False
     try:
-        with backend.open_read(backend_path) as src, open(temp_path, "wb") as dst:shutil.copyfileobj(src, dst)
-        if mark_internal is not None:mark_internal(mount_path)
-        os.replace(temp_path, mount_path)
-        os.utime(mount_path, (st.access_time, st.modified_time))
-    except Exception:
-        if os.path.exists(temp_path):
-            try:os.remove(temp_path)
-            except Exception:pass
-        return
-    try:
-        if os.path.exists(mount_path):
-            fd = os.open(mount_path, os.O_RDWR)
-            try:os.ftruncate(fd, st.size)
-            finally:os.close(fd)
-    except Exception:pass
-    if mark_internal is not None:mark_internal(mount_path)
-    current_attrs = get_win_attributes(mount_path)
-    if current_attrs != INVALID_FILE_ATTRIBUTES:
-        kernel32.SetFileAttributesW(ctypes.c_wchar_p(mount_path), current_attrs | FILE_ATTRIBUTE_READONLY)
-        def remove_readonly():
-            time.sleep(10.0)
-            try:
-                attrs_after = get_win_attributes(mount_path)
-                if attrs_after != INVALID_FILE_ATTRIBUTES and (attrs_after & FILE_ATTRIBUTE_READONLY):
-                    if mark_internal is not None:mark_internal(mount_path)
-                    kernel32.SetFileAttributesW(ctypes.c_wchar_p(mount_path), attrs_after & ~FILE_ATTRIBUTE_READONLY)
-            except Exception:pass
-        try:threading.Thread(target=remove_readonly, daemon=True).start()
-        except:pass
+        hr=cldapi.CfSetInSyncState(handle,CF_IN_SYNC_STATE_IN_SYNC,CF_SET_IN_SYNC_FLAG_NONE,None)
+        if hr!=0:
+            print(f"CfSetInSyncState failed for {mount_path}: {hresult_hex(hr)}")
+            return False
+        metadata=CF_FS_METADATA()
+        metadata.BasicInfo.CreationTime=make_large_integer(unix_time_to_filetime(st.creation_time))
+        metadata.BasicInfo.LastAccessTime=make_large_integer(unix_time_to_filetime(st.access_time))
+        metadata.BasicInfo.LastWriteTime=make_large_integer(unix_time_to_filetime(st.modified_time))
+        metadata.BasicInfo.ChangeTime=make_large_integer(unix_time_to_filetime(st.modified_time))
+        metadata.BasicInfo.FileAttributes=FILE_ATTRIBUTE_NORMAL
+        metadata.FileSize=make_large_integer(st.size)
+        identity,n=make_identity(join_backend_path(backend_dir,name))
+        flags=CF_UPDATE_FLAG_MARK_IN_SYNC|CF_UPDATE_FLAG_DEHYDRATE|CF_UPDATE_FLAG_PASSTHROUGH_FS_METADATA
+        # Mark before the mutation because its filesystem event can arrive immediately.
+        if mark_internal:mark_internal(mount_path, True)
+        hr=cldapi.CfUpdatePlaceholder(handle,ctypes.byref(metadata),ctypes.cast(identity,ctypes.c_void_p),n,None,0,flags,None,None)
+        if hr!=0:
+            print(f"CfUpdatePlaceholder failed for {mount_path}: {hresult_hex(hr)}")
+            return False
+        if mark_internal:mark_internal(mount_path)
+        return True
+    except Exception as e:
+        print(f"Refresh failed for {mount_path}: {e}")
+        return False
+    finally:cldapi.CfCloseHandle(handle)
 def collect_backing_files(backend, backend_directory=""):
     files = []
-    try:
-        for entry_name in backend.listdir(backend_directory):
-            bp = join_backend_path(backend_directory, entry_name)
-            try:
-                st = backend.stat(bp)
-                if st.is_directory:files.extend(collect_backing_files(backend, bp))
-                else:files.append((bp, st))
-            except Exception:pass
-    except Exception:pass
+    try:names = backend.listdir(backend_directory)
+    except Exception as exc:
+        print(f"Cannot list backing directory {backend_directory!r}: {exc}")
+        return files
+    for entry_name in names:
+        if is_temporary_file(entry_name):continue
+        backend_path = join_backend_path(backend_directory, entry_name)
+        try:
+            st = backend.stat(backend_path)
+            if st.is_directory:files.extend(collect_backing_files(backend, backend_path))
+            else:files.append((backend_path, st))
+        except Exception as exc:print(f"Cannot stat {backend_path}: {exc}")
     return files
-refresh_counter = 0
-def check_server_file_updates(backend, mount_directory, journal, is_busy, mark_internal):
-    global refresh_counter
-    if not (hasattr(backend, 'get_hash') and callable(backend.get_hash)):return
-    all_files = collect_backing_files(backend, "")
-    existing_paths = {bp.replace("\\", "/") for bp, st in all_files}
-    for recorded_path in journal.get_all_file_hashes():
-        if recorded_path not in existing_paths or not backend.lexists(recorded_path):journal.delete_file_hash_state(recorded_path)
-    total_files = len(all_files)
-    if total_files == 0:return
-    refresh_counter += 1
-    cycle_pos = (refresh_counter - 1) % 6
-    if total_files <= 16 or cycle_pos == 5:max_to_check = total_files
-    else:max_to_check = max(1, int(total_files / 5))
-    checked_count = 0
+def check_server_file_updates(backend, mount_directory, journal,is_busy, mark_internal, force=False):
+    if type(backend).get_hash is BackingStore.get_hash:return
+    files = collect_backing_files(backend, "")
+    if not files:return
+    existing = {p.replace("\\", "/") for p, _ in files}
+    for p in journal.get_all_file_hashes():
+        if p not in existing or not backend.lexists(p):journal.delete_file_hash_state(p)
     now = time.time()
-    for backend_path, st in all_files:
-        if checked_count >= max_to_check:break
-        if is_busy(backend_path):continue
-        mount_path = os.path.join(mount_directory, backend_path.replace("/", os.sep))
-        if not os.path.lexists(mount_path) and not backend.lexists(backend_path):
-            journal.delete_file_hash_state(backend_path)
-            continue
+    total_files = len(files)
+    batch_size = max(1, (total_files + 4) // 5)
+    eligible = []
+    for backend_path, st in files:
         state = journal.get_file_hash_state(backend_path)
-        if state is None:
-            last_check = 0.0
-            cooldown = 30.0
-            stored_hash = None
-        else:
-            stored_hash = state["hash"]
-            last_check = state["last_check"]
-            cooldown = state["cooldown"]
-        if now - last_check >= cooldown:
-            checked_count += 1
-            try:
-                if not backend.lexists(backend_path):
-                    journal.delete_file_hash_state(backend_path)
-                    continue
-                new_hash = backend.get_hash(backend_path)
-                if new_hash is None:journal.delete_file_hash_state(backend_path)
+        if force or state is None:
+            eligible.append((0.0, backend_path, st, state))
+            continue
+        due = state.get("next_check")
+        if due is None:due = state.get("last_check") or 0.0
+        if due <= now:eligible.append((due, backend_path, st, state))
+    eligible.sort(key=lambda item: (item[0], item[1]))
+    selected = []
+    for item in eligible:
+        if not force and is_busy(item[1]):continue
+        selected.append(item)
+        if len(selected) >= batch_size:break
+    for _, backend_path, st, state in selected:
+        now = time.time()
+        old_hash = state["hash"] if state else None
+        old_local = state["local_hash"] if state else None
+        old_mtime = state.get("backing_mtime") if state else None
+        unchanged = int(state.get("unchanged_checks") or 0) if state else 0
+        try:
+            if not backend.lexists(backend_path):
+                journal.delete_file_hash_state(backend_path)
+                continue
+            new_hash = backend.get_hash(backend_path)
+            if new_hash is None:
+                journal.set_file_hash_state(backend_path, old_hash, now, 5, old_local)
+                journal.schedule_file_check(backend_path, now + 5,st.modified_time, unchanged)
+                continue
+            mount_path = os.path.join(mount_directory,backend_path.replace("/", os.sep))
+            backing_changed = (state is not None and old_hash is not None and new_hash != old_hash)
+            if (state is None or old_hash is None or new_hash != old_hash or get_win_attributes(mount_path) is None):
+                if update_mount_file_from_server(backend, backend_path, mount_path, mark_internal):
+                    journal.set_file_hash_state(backend_path, new_hash, now, 5, new_hash)
+                    unchanged = 0
                 else:
-                    if stored_hash is None:journal.set_file_hash_state(backend_path, new_hash, now, 30.0)
-                    elif new_hash != stored_hash:
-                        journal.set_file_hash_state(backend_path, new_hash, now, 5.0)
-                        if mark_internal is not None:mark_internal(mount_path)
-                        update_mount_file_from_server(backend, backend_path, mount_path, st, mark_internal)
+                    journal.set_file_hash_state(backend_path, old_hash, now, 5, old_local)
+                    journal.schedule_file_check(backend_path, now + 5, st.modified_time, unchanged)
+                    print(f"[refresh] failed: {backend_path}; retrying")
+                    continue
+                journal.schedule_file_check(backend_path, now + 5,st.modified_time, 0)
+                continue
+            local_hash = get_local_hash(mount_path)
+            if local_hash is None:
+                journal.set_file_hash_state(backend_path, new_hash, now, 5,old_local or new_hash)
+                journal.schedule_file_check(backend_path, now + 5,st.modified_time, unchanged)
+                continue
+            if old_local is None:
+                if local_hash != new_hash:
+                    if update_mount_file_from_server(backend, backend_path, mount_path, mark_internal):journal.set_file_hash_state(backend_path, new_hash, now, 5, new_hash)
                     else:
-                        new_cooldown = min(cooldown + 5.0, 30.0)
-                        journal.set_file_hash_state(backend_path, new_hash, now, new_cooldown)
-            except Exception:journal.delete_file_hash_state(backend_path)
-def refresh_directory(backend, backend_directory, mount_directory, is_busy, mark_internal=None):
+                        journal.set_file_hash_state(backend_path, old_hash, now, 5, None)
+                        journal.schedule_file_check(backend_path, now + 5,st.modified_time, unchanged)
+                        continue
+                else:journal.set_file_hash_state(backend_path, new_hash, now, 5, local_hash)
+            elif local_hash == old_local or local_hash == new_hash:journal.set_file_hash_state(backend_path, new_hash, now, 5, local_hash)
+            else:
+                latest = backend.get_hash(backend_path)
+                if latest != new_hash:
+                    if latest is not None and update_mount_file_from_server(backend, backend_path, mount_path, mark_internal):journal.set_file_hash_state(backend_path, latest, now, 5, latest)
+                    else:journal.set_file_hash_state(backend_path, old_hash, now, 5, old_local)
+                    journal.schedule_file_check(backend_path, now + 5,st.modified_time, unchanged)
+                    continue
+                backend.write_file_from_local(mount_path, backend_path)
+                committed = backend.get_hash(backend_path)
+                if committed is None:raise OSError("Could not verify uploaded backing hash")
+                if committed != local_hash:
+                    if update_mount_file_from_server(backend, backend_path, mount_path, mark_internal):journal.set_file_hash_state(backend_path, committed, now, 5, committed)
+                    else:journal.set_file_hash_state(backend_path, old_hash, now, 5, old_local)
+                    journal.schedule_file_check(backend_path, now + 5,st.modified_time, unchanged)
+                    continue
+                attrs = get_win_attributes(mount_path)
+                if attrs is not None and attrs & FILE_ATTRIBUTE_REPARSE_POINT:
+                    if not set_mount_file_sync_state(mount_path, True):print(f"[refresh] Warning: uploaded, but could not mark in sync: {mount_path}")
+                journal.set_file_hash_state(backend_path, committed, now, 5, local_hash)
+            mtime_changed = (old_mtime is not None and st.modified_time != old_mtime)
+            if backing_changed or mtime_changed:unchanged = 0
+            else:unchanged = min(unchanged + 1, 5)
+            interval = min(5 * (unchanged + 1), 30)
+            journal.schedule_file_check(backend_path,time.time() + interval,st.modified_time,unchanged,)
+        except Exception as e:
+            retry_time = time.time() + 5
+            journal.set_file_hash_state(backend_path, old_hash, time.time(), 5, old_local)
+            journal.schedule_file_check(backend_path, retry_time,st.modified_time, unchanged)
+            print(f"[refresh] error for {backend_path}: {e}; retrying in 5 seconds")
+def refresh_directory(backend,backend_directory,mount_directory,is_busy,mark_internal=None,journal=None):
     if is_busy(backend_directory):return
-    os.makedirs(mount_directory, exist_ok=True)
-    try:backend_names = set(backend.listdir(backend_directory))
+    os.makedirs(mount_directory,exist_ok=True)
+    try:backend_names = {name for name in backend.listdir(backend_directory) if not is_temporary_file(name)}
     except OSError:return
-    try:mount_names = set(os.listdir(mount_directory))
+    try:mount_names = {name for name in os.listdir(mount_directory) if not is_temporary_file(name)}
     except OSError:return
-    for name in sorted(backend_names - mount_names):
-        if is_busy(join_backend_path(backend_directory, name)):continue
-        try:create_single_placeholder(backend, backend_directory, name, mount_directory)
-        except Exception:pass
-    for name in sorted(mount_names - backend_names):
-        backend_path = join_backend_path(backend_directory, name)
-        if is_busy(backend_path):continue
-        remove_stale_mount_entry(os.path.join(mount_directory, name), mark_internal)
-    for name in sorted(backend_names & mount_names):
-        backend_path = join_backend_path(backend_directory, name)
-        try:st = backend.stat(backend_path)
+    for name in sorted(backend_names-mount_names):
+        bp=join_backend_path(backend_directory,name)
+        if is_busy(bp):continue
+        try:create_single_placeholder(backend,backend_directory,name,mount_directory,mark_internal)
+        except Exception as e:print(f"Cannot create {bp}: {e}")
+    for name in sorted(mount_names-backend_names):
+        bp=join_backend_path(backend_directory,name)
+        if is_busy(bp):continue
+        path=os.path.join(mount_directory,name)
+        attrs=get_win_attributes(path)
+        if attrs is None:continue
+        state=journal.get_file_hash_state(bp) if journal else None
+        if attrs&FILE_ATTRIBUTE_REPARSE_POINT or state is not None:
+            remove_stale_mount_entry(path,mark_internal)
+            if journal:journal.delete_file_hash_state(bp)
+        elif attrs&FILE_ATTRIBUTE_DIRECTORY:
+            try:
+                backend.make_directory(bp)
+                refresh_directory(backend,bp,path,is_busy,mark_internal,journal)
+            except Exception as e:print(f"Cannot upload directory {bp}: {e}")
+        else:
+            try:
+                backend.write_file_from_local(path,bp)
+                local_hash=hash_local_file(path)
+                remote=backend.get_hash(bp) if type(backend).get_hash is not BackingStore.get_hash else local_hash
+                if remote is not None and journal:journal.set_file_hash_state(bp,remote,time.time(),5,local_hash)
+            except Exception as e:print(f"Cannot upload local-only file {bp}: {e}")
+    for name in sorted(backend_names&mount_names):
+        bp=join_backend_path(backend_directory,name)
+        try:st=backend.stat(bp)
         except OSError:continue
-        if not st.is_directory:continue
-        child_mount = os.path.join(mount_directory, name)
-        if is_busy(backend_path):continue
-        refresh_directory(backend, backend_path, child_mount, is_busy, mark_internal)
-def refresh_mount(backend, mount_directory, is_busy, journal, mark_internal=None):
-    refresh_directory(backend, "", mount_directory, is_busy, mark_internal)
-    check_server_file_updates(backend, mount_directory, journal, is_busy, mark_internal)
+        child=os.path.join(mount_directory,name)
+        if st.is_directory and not is_busy(bp):refresh_directory(backend,bp,child,is_busy,mark_internal,journal)
+def refresh_mount(backend,mount_directory,is_busy,journal,mark_internal=None,force_hash_check=False):
+    refresh_directory(backend,"",mount_directory,is_busy,mark_internal,journal)
+    check_server_file_updates(backend,mount_directory,journal,is_busy,mark_internal,force_hash_check)
+def _cf_execute_transfer_data(connection_key,transfer_key,request_key,offset,data=None,failure_length=0,completion_status=STATUS_SUCCESS,):
+    transfer_length = (len(data) if data is not None else int(failure_length))
+    if transfer_length < 0:raise ValueError("Negative transfer length")
+    buffer_ptr = None
+    try:
+        if data is not None and completion_status == STATUS_SUCCESS:
+            if not data:raise ValueError("Cannot transfer empty data")
+            alloc_size = (len(data) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
+            buffer_ptr = kernel32.VirtualAlloc(None,alloc_size,MEM_COMMIT | MEM_RESERVE,PAGE_READWRITE)
+            if not buffer_ptr:raise MemoryError("VirtualAlloc failed")
+            ctypes.memmove(buffer_ptr, data, len(data))
+        op_info = CF_OPERATION_INFO()
+        op_info.StructSize = ctypes.sizeof(CF_OPERATION_INFO)
+        op_info.Type = CF_OPERATION_TYPE_TRANSFER_DATA
+        op_info.ConnectionKey = connection_key
+        op_info.TransferKey = transfer_key
+        op_info.RequestKey = request_key
+        op_params = CF_OPERATION_PARAMETERS()
+        op_params.ParamSize = TRANSFER_DATA_PARAM_SIZE
+        transfer = op_params.Union.TransferData
+        transfer.Flags = 0
+        transfer.CompletionStatus = completion_status
+        transfer.Buffer = buffer_ptr
+        transfer.Offset = make_large_integer(offset)
+        transfer.Length = make_large_integer(transfer_length)
+        hr = cldapi.CfExecute(ctypes.byref(op_info),ctypes.byref(op_params),)
+        check_hresult(hr, "CfExecute(TRANSFER_DATA)")
+    finally:
+        if buffer_ptr:kernel32.VirtualFree(buffer_ptr, 0, MEM_RELEASE)
+def _cf_fail_fetch(connection_key,transfer_key,request_key,offset,length,logical_size,):
+    offset = max(0, int(offset))
+    start = offset & ~(PAGE_SIZE - 1)
+    if length == CF_EOF:requested_end = max(start, int(logical_size))
+    elif length >= 0:requested_end = max(start + PAGE_SIZE,offset + int(length),)
+    else:requested_end = start + PAGE_SIZE
+    end = max(start + PAGE_SIZE, requested_end)
+    failure_length = (end - start + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
+    _cf_execute_transfer_data(connection_key,transfer_key,request_key,start,data=None,failure_length=failure_length,completion_status=STATUS_CLOUD_FILE_UNSUCCESSFUL,)
 def on_fetch_data(callback_info_ptr, callback_parameters_ptr):
-    info = ctypes.cast(callback_info_ptr, ctypes.POINTER(CF_CALLBACK_INFO)).contents
-    params = ctypes.cast(callback_parameters_ptr, ctypes.POINTER(CF_CALLBACK_PARAMETERS)).contents
-    offset = params.Union.FetchData.RequiredFileOffset.QuadPart
-    length = params.Union.FetchData.RequiredLength.QuadPart
-    backend = ACTIVE_BACKING_STORE
-    if backend is None:return
-    backend_path = callback_path_to_backend_path(info)
-    if backend_path is None:return
-    connection_key = info.ConnectionKey
-    transfer_key = info.TransferKey
-    request_key = info.RequestKey
+    try:
+        info = ctypes.cast(callback_info_ptr,ctypes.POINTER(CF_CALLBACK_INFO),).contents
+        params = ctypes.cast(callback_parameters_ptr,ctypes.POINTER(CF_CALLBACK_PARAMETERS),).contents
+        offset = int(params.Union.FetchData.RequiredFileOffset.QuadPart)
+        length = int(params.Union.FetchData.RequiredLength.QuadPart)
+        connection_key = int(info.ConnectionKey)
+        transfer_key = int(info.TransferKey)
+        request_key = int(info.RequestKey)
+        logical_size = max(0, int(info.FileSize.QuadPart))
+        backend = ACTIVE_BACKING_STORE
+        backend_path = callback_path_to_backend_path(info)
+    except Exception as exc:
+        print(f"Invalid FETCH_DATA callback: {exc}")
+        return
     def worker():
         try:
-            file_size = backend.stat(backend_path).size
-            if offset < 0 or length < 0 or offset > file_size:raise ValueError("Invalid fetch range")
-            end_offset = min(offset + length, file_size)
+            if backend is None:raise RuntimeError("Backing store is unavailable")
+            if backend_path is None:raise ValueError("Could not resolve callback path to backing path")
+            if offset < 0 or offset > logical_size:raise ValueError(f"Invalid fetch offset {offset}; logical size is {logical_size}")
+            if length < 0 and length != CF_EOF:raise ValueError(f"Invalid fetch length {length}")
+            if length == CF_EOF:required_end = logical_size
+            else:required_end = min(logical_size,offset + length,)
+            if required_end <= offset:raise ValueError(f"Empty or stale fetch range: offset={offset}, length={length}, logical_size={logical_size}")
+            start = offset & ~(PAGE_SIZE - 1)
+            if required_end >= logical_size:end = logical_size
+            else:end = min(logical_size,(required_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1),)
+            if end <= start:raise ValueError(f"Invalid aligned range [{start}, {end})")
+            st = backend.stat(backend_path)
+            if st.is_directory:raise IsADirectoryError(backend_path)
+            if st.size < end:raise IOError(f"Backing file is too short for fetch: {backend_path}; backing_size={st.size}, required_end={end}. The placeholder may need a metadata refresh.")
             with backend.open_read(backend_path) as f:
-                current_offset = offset
-                while current_offset < end_offset:
-                    remaining = end_offset - current_offset
-                    chunk_size = min(FETCH_CHUNK_SIZE, remaining)
-                    if current_offset + chunk_size < end_offset:chunk_size &= ~0xFFF
-                    if chunk_size <= 0:raise ValueError("Invalid chunk size")
+                current_offset = start
+                while current_offset < end:
+                    remaining = end - current_offset
+                    chunk_size = min(FETCH_CHUNK_SIZE,remaining,)
+                    if current_offset + chunk_size < end:chunk_size &= ~(PAGE_SIZE - 1)
+                    if chunk_size <= 0:raise ValueError("Invalid transfer chunk size")
                     f.seek(current_offset)
                     data = f.read(chunk_size)
-                    if len(data) != chunk_size:raise IOError("Short read")
-                    data_len = len(data)
-                    alloc_size = (data_len + 4095) & ~4095
-                    buffer_ptr = kernel32.VirtualAlloc(None, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
-                    if not buffer_ptr:raise MemoryError("VirtualAlloc failed")
-                    try:
-                        ctypes.memmove(buffer_ptr, data, data_len)
-                        op_info = CF_OPERATION_INFO()
-                        op_info.StructSize = ctypes.sizeof(CF_OPERATION_INFO)
-                        op_info.Type = CF_OPERATION_TYPE_TRANSFER_DATA
-                        op_info.ConnectionKey = connection_key
-                        op_info.TransferKey = transfer_key
-                        op_params = CF_OPERATION_PARAMETERS()
-                        op_params.ParamSize = TRANSFER_DATA_PARAM_SIZE
-                        op_params.Union.TransferData.CompletionStatus = STATUS_SUCCESS
-                        op_params.Union.TransferData.Buffer = buffer_ptr
-                        op_params.Union.TransferData.Offset = make_large_integer(current_offset)
-                        op_params.Union.TransferData.Length = make_large_integer(data_len)
-                        hr = cldapi.CfExecute(ctypes.byref(op_info), ctypes.byref(op_params))
-                        if hr != 0:raise OSError(f"CfExecute failed:{hresult_hex(hr)}")
-                    finally:kernel32.VirtualFree(buffer_ptr, 0, MEM_RELEASE)
-                    current_offset += data_len
-        except Exception:
-            try:
-                op_info = CF_OPERATION_INFO()
-                op_info.StructSize = ctypes.sizeof(CF_OPERATION_INFO)
-                op_info.Type = CF_OPERATION_TYPE_TRANSFER_DATA
-                op_info.ConnectionKey = connection_key
-                op_info.TransferKey = transfer_key
-                op_params = CF_OPERATION_PARAMETERS()
-                op_params.ParamSize = TRANSFER_DATA_PARAM_SIZE
-                op_params.Union.TransferData.CompletionStatus = STATUS_UNSUCCESSFUL
-                op_params.Union.TransferData.Offset = make_large_integer(offset)
-                op_params.Union.TransferData.Length = make_large_integer(0)
-                cldapi.CfExecute(ctypes.byref(op_info), ctypes.byref(op_params))
-            except Exception:pass
-    threading.Thread(target=worker, name="CfFetchData", daemon=True).start()
+                    if len(data) != chunk_size:raise IOError(f"Short read from {backend_path}: wanted {chunk_size}, got {len(data)}")
+                    _cf_execute_transfer_data(connection_key,transfer_key,request_key,current_offset,data=data,completion_status=STATUS_SUCCESS,)
+                    current_offset += len(data)
+        except Exception as exc:
+            print(f"FETCH_DATA failed for {backend_path!r}: {exc}")
+            try:_cf_fail_fetch(connection_key,transfer_key,request_key,offset,length,logical_size,)
+            except Exception as completion_exc:print(f"Could not complete failed FETCH_DATA for {backend_path!r}: {completion_exc}")
+    threading.Thread(target=worker,name="CfFetchData",daemon=True,).start()
 cb_fetch_data = CF_CALLBACK_FUNC(on_fetch_data)
-CALLBACK_REGISTRATIONS = (CF_CALLBACK_REGISTRATION * 2)()
-CALLBACK_REGISTRATIONS[0].Callback = ctypes.cast(cb_fetch_data, ctypes.c_void_p)
-CALLBACK_REGISTRATIONS[1].Type = CF_CALLBACK_TYPE_NONE
-CALLBACK_REGISTRATIONS[1].Callback = None
+CALLBACK_REGISTRATIONS=(CF_CALLBACK_REGISTRATION*2)()
+CALLBACK_REGISTRATIONS[0].Callback=ctypes.cast(cb_fetch_data,ctypes.c_void_p)
+CALLBACK_REGISTRATIONS[0].Type=CF_CALLBACK_TYPE_FETCH_DATA
+CALLBACK_REGISTRATIONS[1].Type=CF_CALLBACK_TYPE_NONE
+CALLBACK_REGISTRATIONS[1].Callback=None
+def mount_path_signature(path):
+    attrs = get_win_attributes(path)
+    if attrs is None:return None
+    try:
+        st = os.stat(path)
+        return (attrs,st.st_size,st.st_mtime_ns,st.st_ctime_ns,)
+    except OSError:return ("stat-error", attrs)
 def is_temporary_file(path):
     name = os.path.basename(path).lower()
     out=any([x in name for x in (".tmp", ".crdownload", ".part", ".download", ".temp", '.bak')]) or "~" in name
@@ -418,17 +595,25 @@ class SyncJournal:
     def initialize(self):
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self._db = sqlite3.connect(self.path, check_same_thread=False)
+        self._db.execute("CREATE TABLE IF NOT EXISTS file_hashes (backend_path TEXT PRIMARY KEY, hash TEXT, local_hash TEXT, last_check REAL, cooldown REAL, next_check REAL, backing_mtime REAL, unchanged_checks INTEGER NOT NULL DEFAULT 0)")
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(file_hashes)")}
+        migrations = {"local_hash": "TEXT","next_check": "REAL","backing_mtime": "REAL","unchanged_checks": "INTEGER NOT NULL DEFAULT 0",}
+        for name, definition in migrations.items():
+            if name not in cols:self._db.execute(f"ALTER TABLE file_hashes ADD COLUMN {name} {definition}")
+        self._db.execute("UPDATE file_hashes SET next_check = COALESCE(next_check, last_check, 0)")
         self._db.execute("CREATE TABLE IF NOT EXISTS operations (id INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT NOT NULL, source_path TEXT, destination_path TEXT, backend_path TEXT, is_directory INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)")
-        self._db.execute("CREATE TABLE IF NOT EXISTS file_hashes (backend_path TEXT PRIMARY KEY, hash TEXT, last_check REAL, cooldown REAL)")
         self._db.commit()
     def get_file_hash_state(self, backend_path):
+        with self._lock:row = self._db.execute("SELECT hash, local_hash, last_check, cooldown, next_check, backing_mtime, unchanged_checks FROM file_hashes WHERE backend_path = ?", (backend_path.replace("\\", "/"),)).fetchone()
+        if row is None:return None
+        return {"hash": row[0],"local_hash": row[1],"last_check": row[2],"cooldown": row[3],"next_check": row[4],"backing_mtime": row[5],"unchanged_checks": row[6],}
+    def set_file_hash_state(self, backend_path, file_hash, last_check, cooldown, local_hash=None):
         with self._lock:
-            row = self._db.execute("SELECT hash, last_check, cooldown FROM file_hashes WHERE backend_path=?", (backend_path.replace("\\", "/"),)).fetchone()
-            if row:return {"hash":row[0], "last_check":row[1], "cooldown":row[2]}
-            return None
-    def set_file_hash_state(self, backend_path, file_hash, last_check, cooldown):
+            self._db.execute("INSERT INTO file_hashes (backend_path, hash, local_hash, last_check, cooldown, next_check) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(backend_path) DO UPDATE SET hash = excluded.hash, local_hash = COALESCE(excluded.local_hash, file_hashes.local_hash), last_check = excluded.last_check, cooldown = excluded.cooldown, next_check = excluded.next_check", (backend_path.replace("\\", "/"),file_hash,local_hash,last_check,cooldown,last_check + cooldown,))
+            self._db.commit()
+    def schedule_file_check(self, backend_path, next_check,backing_mtime, unchanged_checks):
         with self._lock:
-            self._db.execute("INSERT OR REPLACE INTO file_hashes (backend_path, hash, last_check, cooldown) VALUES (?, ?, ?, ?)", (backend_path.replace("\\", "/"), file_hash, last_check, cooldown))
+            self._db.execute("UPDATE file_hashes SET next_check = ?, backing_mtime = ?, unchanged_checks = ? WHERE backend_path = ?", (next_check,backing_mtime,unchanged_checks,backend_path.replace("\\", "/"),))
             self._db.commit()
     def delete_file_hash_state(self, backend_path):
         with self._lock:
@@ -460,8 +645,10 @@ class SyncJournal:
             self._db.execute("DELETE FROM operations WHERE id=?", (operation_id,))
             self._db.commit()
     def pending(self):
-        with self._lock:rows = self._db.execute("SELECT id, operation, source_path, destination_path, backend_path, is_directory FROM operations ORDER BY id").fetchall()
-        return [{"id":r[0], "operation":r[1], "source_path":r[2], "destination_path":r[3], "backend_path":r[4], "is_directory":bool(r[5])} for r in rows]
+        try:
+            with self._lock:rows = self._db.execute("SELECT id, operation, source_path, destination_path, backend_path, is_directory FROM operations ORDER BY id").fetchall()
+            return [{"id":r[0], "operation":r[1], "source_path":r[2], "destination_path":r[3], "backend_path":r[4], "is_directory":bool(r[5])} for r in rows]
+        except sqlite3.OperationalError:return []
     def close(self):
         with self._lock:
             if self._db is not None:
@@ -478,17 +665,37 @@ class MountSyncHandler(FileSystemEventHandler):
         self._internal_paths = {}
     def _get_backend_path(self, mount_path):return mount_path_to_backend_path(mount_path)
     def _folder_for(self, backend_path):return os.path.dirname(backend_path).replace("\\", "/")
-    def _mark_internal(self, path):
-        with self._lock:self._internal_paths[os.path.abspath(path)] = time.monotonic() + 2.0
-    def _is_internal(self, path):
+    def _mark_internal(self, path, allow_delete=False):
+        path = os.path.abspath(path)
+        signature = mount_path_signature(path)
+        now = time.monotonic()
+        with self._lock:
+            previous = self._internal_paths.get(path)
+            # Preserve the delete allowance when a replacement is marked again
+            # after its new placeholder has been created.
+            preserve_delete = bool(
+                allow_delete
+                or (previous is not None and previous[0] > now and len(previous) > 2 and previous[2])
+            )
+            self._internal_paths[path] = (now + 2.0, signature, preserve_delete)
+    def _is_internal(self, path, for_delete=False):
         path = os.path.abspath(path)
         now = time.monotonic()
         with self._lock:
-            expired = [p for p, expiry in self._internal_paths.items() if expiry <= now]
-            for p in expired:del self._internal_paths[p]
-            for internal_path in self._internal_paths:
-                if path == internal_path or path.startswith(internal_path + os.sep):return True
-        return False
+            entry = self._internal_paths.get(path)
+            if entry is None:return False
+            expiry, expected_signature = entry[0], entry[1]
+            allow_delete = bool(entry[2]) if len(entry) > 2 else False
+            if expiry <= now:
+                del self._internal_paths[path]
+                return False
+            # A deletion event can arrive after the path disappeared or was
+            # recreated, so its signature cannot match the pre-update signature.
+            if for_delete and allow_delete:return True
+            current_signature = mount_path_signature(path)
+            if current_signature == expected_signature:return True
+            del self._internal_paths[path]
+            return False
     def _begin_operation(self, folders):
         folders = {f.replace("\\", "/").rstrip("/") for f in folders if f is not None}
         with self._lock:self._active_folders.update(folders)
@@ -514,20 +721,52 @@ class MountSyncHandler(FileSystemEventHandler):
             elif operation == "move":self.backing_store.move(kwargs["source_path"], kwargs["destination_path"])
             self.journal.remove(journal_id)
         finally:self._end_operation(active)
-    def _copy_file_now(self, source_path, backend_path):
+    @staticmethod
+    def _source_signature(path):
+        st = os.stat(path)
+        return (st.st_size,st.st_mtime_ns,st.st_ctime_ns,)
+    def _copy_file_now(self,source_path,backend_path):
+        hashing=type(self.backing_store).get_hash is not BackingStore.get_hash
         for attempt in range(10):
             try:
                 if not os.path.isfile(source_path):raise FileNotFoundError(source_path)
-                time.sleep(0.05)
-                self.backing_store.write_file_from_local(source_path, backend_path)
+                before=self._source_signature(source_path)
+                time.sleep(0.15)
+                stable=self._source_signature(source_path)
+                if before!=stable:
+                    time.sleep(0.1*(attempt+1))
+                    continue
+                state = self.journal.get_file_hash_state(backend_path)
+                local_hash_before = hash_local_file(source_path) if hashing else None
+                known_local_hash = state.get("local_hash") if state else None
+                if hashing and self.backing_store.lexists(backend_path):
+                    remote = self.backing_store.get_hash(backend_path)
+                    backing_changed = (remote is not None and state is not None and state.get("hash") is not None and remote != state["hash"])
+                    local_unchanged = (known_local_hash is not None and local_hash_before == known_local_hash)
+                    if backing_changed and local_unchanged:
+                        if not update_mount_file_from_server(self.backing_store,backend_path,source_path,self._mark_internal,):raise OSError(f"Backing changed; could not refresh {source_path}")
+                        self.journal.set_file_hash_state(backend_path, remote, time.time(), 5, remote)
+                        return
+                self.backing_store.write_file_from_local(source_path,backend_path)
+                if self._source_signature(source_path)!=stable:
+                    time.sleep(0.1*(attempt+1))
+                    continue
+                local_hash=hash_local_file(source_path)
+                attrs=get_win_attributes(source_path)
+                if attrs is not None and attrs&FILE_ATTRIBUTE_REPARSE_POINT:
+                    if not set_mount_file_sync_state(source_path,True):print(f"Warning: upload succeeded but in-sync marking failed: {source_path}")
+                remote=self.backing_store.get_hash(backend_path) if hashing else local_hash
+                if remote is None:raise OSError(f"Could not verify backing write: {backend_path}")
+                self.journal.set_file_hash_state(backend_path,remote,time.time(),5,local_hash)
+                self._mark_internal(source_path)
                 return
             except Exception as e:
-                if attempt == 9:raise e
-                time.sleep(0.10 * (attempt + 1))
+                if attempt==9:raise
+                time.sleep(0.1*(attempt+1))
     def _copy_file(self, source_path, backend_path):
         folder = self._folder_for(backend_path)
-        try:self._run_journaled("write", {folder}, source_path=os.path.abspath(source_path), backend_path=backend_path)
-        except Exception:pass
+        try:self._run_journaled("write",{folder},source_path=os.path.abspath(source_path),backend_path=backend_path,)
+        except Exception as exc:print(f"Upload failed: {source_path} -> {backend_path}: {exc}")
     def on_created(self, event):
         if self._is_internal(event.src_path):return
         if not event.is_directory and is_temporary_file(event.src_path):return
@@ -539,12 +778,13 @@ class MountSyncHandler(FileSystemEventHandler):
             return
         self._copy_file(event.src_path, backend_path)
     def on_modified(self, event):
-        if event.is_directory or self._is_internal(event.src_path):return
+        if (event.is_directory or is_temporary_file(event.src_path) or self._is_internal(event.src_path)):return
         backend_path = self._get_backend_path(event.src_path)
         if backend_path is None:return
         self._copy_file(event.src_path, backend_path)
     def on_deleted(self, event):
-        if self._is_internal(event.src_path):return
+        if not event.is_directory and is_temporary_file(event.src_path):return
+        if self._is_internal(event.src_path, for_delete=True):return
         backend_path = self._get_backend_path(event.src_path)
         if backend_path is None:return
         self.journal.cancel_writes_for(source_path=event.src_path, backend_path=backend_path)
@@ -559,18 +799,20 @@ class MountSyncHandler(FileSystemEventHandler):
         source_backend = self._get_backend_path(event.src_path)
         destination_backend = self._get_backend_path(event.dest_path)
         if source_backend is None or destination_backend is None:return
-        self.journal.delete_file_hash_state(source_backend)
-        if not event.is_directory and is_temporary_file(event.src_path) and not is_temporary_file(event.dest_path):
+        source_temp = not event.is_directory and is_temporary_file(event.src_path)
+        destination_temp = not event.is_directory and is_temporary_file(event.dest_path)
+        if destination_temp:return
+        if source_temp and not destination_temp:
             if os.path.isfile(event.dest_path):self._copy_file(event.dest_path, destination_backend)
             return
-        if not event.is_directory and is_temporary_file(event.dest_path):return
+        self.journal.delete_file_hash_state(source_backend)
         source_folder = self._folder_for(source_backend)
         destination_folder = self._folder_for(destination_backend)
         if not self.backing_store.lexists(source_backend):
-            if not event.is_directory:self._copy_file(event.dest_path, destination_backend)
+            if not event.is_directory and os.path.isfile(event.dest_path):self._copy_file(event.dest_path, destination_backend)
             return
-        try:self._run_journaled("move", {source_folder, destination_folder}, source_path=source_backend, destination_path=destination_backend, is_directory=event.is_directory)
-        except Exception:pass
+        try:self._run_journaled("move",{source_folder, destination_folder},source_path=source_backend,destination_path=destination_backend,is_directory=event.is_directory,)
+        except Exception as exc:print(f"Move failed: {source_backend} -> {destination_backend}: {exc}")
 def register_sync_root():
     registration = CF_SYNC_REGISTRATION()
     registration.StructSize = ctypes.sizeof(CF_SYNC_REGISTRATION)
@@ -635,7 +877,7 @@ def main(backing_store, mount_dir):
         os.makedirs(MOUNT_DIR, exist_ok=True)
         replay_journal(journal, backing_store)
         register_sync_root()
-        refresh_mount(backing_store, MOUNT_DIR, lambda path:False, journal)
+        refresh_mount(backing_store,MOUNT_DIR,lambda path:False,journal,force_hash_check=True)
         connection_key = connect_sync_root()
         event_handler = MountSyncHandler(MOUNT_DIR, backing_store, journal)
         refresh_mount(backing_store, MOUNT_DIR, event_handler.is_folder_busy, journal, event_handler._mark_internal)
