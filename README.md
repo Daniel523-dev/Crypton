@@ -5,9 +5,9 @@ Crypton is a cross-platform, end-to-end encrypted, self-hosted file storage ecos
 Crypton supports asynchronous uploads, transparent file hydration through the Windows Cloud Files API (cfAPI), and FUSE-based Linux mounting with chunked caching. Files are encrypted and decrypted on the fly in memory, while authentication keys are protected with password-based encryption at rest. Crypton uses a custom authentication and networking protocol built on standard cryptographic primitives rather than SSH or conventional file-transfer protocols.
 
 > [!IMPORTANT]
-> **Before exploring Crypton, read `network-README.md` and examine `network.py`!**
+> ### **Before exploring Crypton, read `network-README.md` and examine `network.py`!**
 >
-> `network-README.md` explains the networking architecture, while `network.py` contains the project's cryptographic foundation and potentially novel design work. **Skip these files, and you'll miss what makes Crypton truly interesting.**
+> ### `network.py` contains the project's cryptographic foundation and potentially novel design work. **Skip these files, and you'll miss what makes Crypton truly interesting.**
 
 ## Setup and Installation
 
