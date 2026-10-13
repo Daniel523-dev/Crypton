@@ -5,13 +5,13 @@ except Exception as e:DecryptionError=type(e)
 MAX_QUEUE_BYTES = 256 * 1024 * 1024
 class ProtocolError(Exception):pass
 SALT_SIZE = 64
-STD_TIMEOUT = 5.0
+STD_TIMEOUT = 7.5
 MAX_TIMEOUT = 60
 def _derive_at_rest_key(password, salt_or_path):
     if not password:raise ValueError("Password cannot be empty.")
     result = zxcvbn(password)
     guesses_log10 = result.get("guesses_log10", 0)
-    if guesses_log10 <= 9:raise ValueError(f"Password too weak (log10 guesses:{guesses_log10:.2f}). Must be > 8.")
+    if guesses_log10 <= 9:raise ValueError(f"Password too weak (log10 guesses:{guesses_log10:.2f}). Must be > 9.")
     if isinstance(salt_or_path, bytes):
         salt = salt_or_path
         if len(salt) != SALT_SIZE:raise ValueError(f"Salt must be exactly {SALT_SIZE} bytes.") 
