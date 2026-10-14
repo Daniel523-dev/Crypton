@@ -183,16 +183,17 @@ class TCPServer:
         try:self.handshake_lock.release()
         except:pass
     def _kill_client(self, cid):
-        for d in (self._keys,self._counters,self._recv_counters,self._handshakes,self._q_bytes,):d.pop(cid, None)
-        dead_eids = [eid for eid, owner in self._eid_map.items() if owner == cid]
-        for eid in dead_eids:
-            self._eid_map.pop(eid, None)
-            self._eid_activity.pop(eid, None)
-            self._seen_eids.pop(eid, None)
-        zcid = self.zcids.get(cid, cid)
-        acid = self.acids.get(cid, cid)
-        self.zcids.pop(acid, None)
-        self.acids.pop(zcid, None)
+        with self._lock:
+            for d in (self._keys,self._counters,self._recv_counters,self._handshakes,self._q_bytes,):d.pop(cid, None)
+            dead_eids = [eid for eid, owner in self._eid_map.items() if owner == cid]
+            for eid in dead_eids:
+                self._eid_map.pop(eid, None)
+                self._eid_activity.pop(eid, None)
+                self._seen_eids.pop(eid, None)
+            zcid = self.zcids.get(cid, cid)
+            acid = self.acids.get(cid, cid)
+            self.zcids.pop(acid, None)
+            self.acids.pop(zcid, None)
     def _loop(self):
         poller = zmq.Poller()
         poller.register(self.sock, zmq.POLLIN)
