@@ -140,13 +140,13 @@ class TCPServer:
                 sc += 1
                 self._send_q.put((cid, eid, ctr + Encryption.encryptGCM(data, ekey, aad=eid + ctr + b"1")))
             def recv_enc():
-                nonlocal rc
+                nonlocal rc, eid
                 payload = self._handshakes[cid].get(timeout=STD_TIMEOUT)
                 ctr = payload[:8]
                 _ctr = int.from_bytes(ctr, 'big')
                 if _ctr <= rc:raise ProtocolError('Counter Error')
                 rc = _ctr
-                return Encryption.decryptGCM(payload[8:], ekey, aad=eid + ctr + b"0")
+                return Encryption.decryptGCM(payload[8:], ekey,  aad=eid + ctr + b"0")
             auth_test_key = Encryption.gen_ed25519(True)
             send_enc(auth_test_key[1])
             pub = recv_enc()
@@ -154,17 +154,17 @@ class TCPServer:
                 nonlocal sc, eid
                 ctr = sc.to_bytes(8, "big")
                 sc += 1
-                enc = Encryption.encryptGCM(data, ekey, aad=eid + ctr + b"1")
+                enc = Encryption.encryptGCM(data, ekey,  aad=eid + ctr + b"1")
                 self._send_q.put((cid, eid, ctr + Encryption.ed25519_sign(auth_test_key[0], enc)))
             def recv_signed_enc():
-                nonlocal rc
+                nonlocal rc, eid
                 payload = self._handshakes[cid].get(timeout=STD_TIMEOUT)
                 ctr = payload[:8]
                 _ctr = int.from_bytes(ctr, "big")
                 if _ctr <= rc:raise ProtocolError("Counter Error")
                 rc = _ctr
                 enc = Encryption.ed25519_verify(pub, payload[8:])
-                return Encryption.decryptGCM(enc, ekey, aad=eid + ctr + b"0")
+                return Encryption.decryptGCM(enc, ekey,  aad=eid + ctr + b"0")
             nonce = os.urandom(256)
             send_enc(nonce)
             if recv_signed_enc() != nonce:raise ProtocolError("Bad Sig")
@@ -291,7 +291,6 @@ class TCPServer:
         except Exception:pass
     def send(self, payload, eid=None, client_id=None):
         if eid is None:eid = os.urandom(64)
-        if len(eid)!=64:raise ValueError('eid must be 64 bytes')
         with self._lock:
             if client_id is not None:cid = self.zcids.get(client_id)
             else:cid = self._eid_map.get(eid)
@@ -309,7 +308,6 @@ class TCPServer:
         self._send_q.put((cid, eid, ctr + Encryption.encryptGCM(payload, ekey, aad=eid + ctr + b"1")))
         return eid
     def recv(self, eid, timeout=MAX_TIMEOUT):
-        if len(eid)!=64:raise ValueError('eid must be 64 bytes')
         with self._lock:
             cid = self._eid_map.get(eid)
             if not cid or cid not in self._recv_qs:raise KeyError(f"Unknown or inactive eid: {eid}")
@@ -407,9 +405,10 @@ class TCPClient:
             nonlocal eid
             ctr = self.sc.to_bytes(8, "big")
             self.sc += 1
-            enc = Encryption.encryptGCM(data, self._ekey, aad=eid + ctr + b"0")
+            enc = Encryption.encryptGCM(data, self._ekey,  aad=eid + ctr + b"0")
             self._send_q.put([eid, ctr + Encryption.ed25519_sign(auth_test_key[0], enc)])
         def recv_signed_enc():
+            nonlocal eid
             payload = self._hs_q.get(timeout=STD_TIMEOUT)
             ctr = payload[:8]
             _ctr = int.from_bytes(ctr, "big")
@@ -417,7 +416,7 @@ class TCPClient:
                 self.close()
                 raise ProtocolError("Counter Error")
             self.rc = _ctr
-            return Encryption.decryptGCM(Encryption.ed25519_verify(pub, payload[8:]), self._ekey, aad=eid + ctr + b"1")
+            return Encryption.decryptGCM(Encryption.ed25519_verify(pub, payload[8:]), self._ekey,  aad=eid + ctr + b"1")
         nonce = self._recv_enc(eid, self._hs_q.get(timeout=STD_TIMEOUT)) # get 10
         send_signed_enc(nonce) # put 11
         cnonce = os.urandom(256)
@@ -448,7 +447,6 @@ class TCPClient:
         return Encryption.decryptGCM(raw_payload[8:], ekey, aad=eid + ctr + b"1")
     def send(self, payload, eid=None) -> bytes:
         if eid is None:eid = os.urandom(64)
-        if len(eid)!=64:raise ValueError('eid must be 64 bytes')
         with self._lock:
             if eid not in self._pending:self._pending[eid] = queue.Queue(25)
             self._eid_activity[eid] = time.time()
@@ -461,7 +459,6 @@ class TCPClient:
         self._send_enc(eid, payload)
         return eid
     def recv(self, eid:bytes, timeout:float = MAX_TIMEOUT) -> bytes:
-        if len(eid)!=64:raise ValueError('eid must be 64 bytes')
         with self._lock:
             q = self._pending.get(eid)
             self._eid_activity[eid] = time.time()
