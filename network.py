@@ -208,6 +208,8 @@ class TCPServer:
                             self._eid_activity.pop(e, None)
                             self._eid_map.pop(e, None)
                             self._seen_eids.pop(e, None)
+            except:pass
+            try:
                 while not self._send_q.empty():
                     item = self._send_q.get_nowait()
                     if item is None:break
