@@ -13,7 +13,7 @@ elif sys.platform.startswith("linux"):
     PLATFORM = "linux"
 else:raise RuntimeError(f"Unsupported platform:{sys.platform}")
 def get_optional_input(text, timeout=15):
-    if not sys.stdin.isatty() or not sys.stdout.isatty():return None
+    if not sys.stdin.isatty() or not sys.stdout.isatty():return ""
     value = []
     cursor = 0
     start = time.monotonic()
@@ -63,7 +63,7 @@ def get_optional_input(text, timeout=15):
             char = msvcrt.getwch()
             if char in ("\r", "\n"):
                 print()
-                return "".join(value) or None
+                return "".join(value) or ""
             if char == "\x03":raise KeyboardInterrupt
             if char in ("\x00", "\xe0"):
                 key = msvcrt.getwch()
@@ -77,7 +77,7 @@ def get_optional_input(text, timeout=15):
             elif char == "\x1b":continue
             else:insert(char)
         print()
-        return None
+        return ""
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
@@ -87,7 +87,7 @@ def get_optional_input(text, timeout=15):
             ready, _, _ = select.select([fd], [], [], remaining)
             if not ready:
                 print()
-                return None
+                return ""
             char = os.read(fd, 1)
             if char in (b"\r", b"\n"):
                 print()
@@ -123,7 +123,7 @@ def get_optional_input(text, timeout=15):
                 decoded = raw.decode("utf-8", errors="replace")
                 for c in decoded:insert(c)
         print()
-        return None
+        return ""
     finally:termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 def make_packet(meta, payload=b""):
     h = json.dumps(meta, separators=(",", ":")).encode()
@@ -159,11 +159,10 @@ class RemoteReader:
     def tell(self):return self.offset
     def close(self):pass
 class RemoteStorage:
-    def __init__(self, host="127.0.0.1", port=9000, key_path="./auth_key", password=None, auth_key_password_callback=None):
-        if not os.path.exists(key_path):raise FileNotFoundError(f"Key file not found:{key_path}")
+    def __init__(self, host="127.0.0.1", port=9000, key_path="./auth_key", password=None, auth_key_code_callback=None):
         if not password:password = getpass.getpass("Client password:")
         import network
-        try:self.client = network.TCPClient(host=host,port=port,password=password,auth_key=key_path,auth_key_password_callback=auth_key_password_callback)
+        try:self.client = network.TCPClient(host=host,port=port,password=password,auth_key=key_path,auth_key_code_callback=auth_key_code_callback)
         except Exception as e:traceback.print_exception(e);raise OSError
         self.lock = __import__("threading").Lock()
         self.callbacks = {"read":None, "write":None, "delete":None, "mkdir":None}
@@ -377,7 +376,7 @@ class LinuxRemoteStorage(RemoteStorage):
         if not self._transactional_write(source_path, relative_path):
             raise BlockingIOError(errno.EBUSY,"Backing file changed while uploading",relative_path,)
     def write_file_from_local_if_unchanged(self, source_path, relative_path, expected_version):return self._transactional_write(source_path, relative_path, expected_version=expected_version)
-def auth_key_password_callback():return getpass.getpass('Auth Key Password:')
+def auth_key_code_callback():return input('Auth Key Security Code: ')
 if __name__ == "__main__":
     key_path = sys.argv[1] if len(sys.argv) > 1 else "./auth_key"
     TPM=False
@@ -403,8 +402,8 @@ if __name__ == "__main__":
         retry=False
         if password==None:password = getpass.getpass("Client password:")
         storage_class = RemoteStorage if PLATFORM == "windows" else LinuxRemoteStorage
-        try:storage = storage_class(host=ip,key_path=key_path,password=password,auth_key_password_callback=auth_key_password_callback)
-        except OSError:password=None;retry=True
+        storage = storage_class(host=ip,key_path=key_path,password=password,auth_key_code_callback=auth_key_code_callback)
+        # except OSError:password=None;retry=True
     if retrys==0 and retry:raise RuntimeError('Setup Error')
     if TPM:
         try:c.create_bytes('SFTP client password',password.encode('ascii'))

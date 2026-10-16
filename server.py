@@ -8,46 +8,118 @@ VFS_UPLOAD_IDLE_TIMEOUT = 3600
 VFS_MAX_UPLOAD_CHUNK = 64 * 1024 * 1024
 if os.name == "nt":import msvcrt
 else:import select, termios, tty
-def get_optional_password(text, timeout=15):
-    if not sys.stdin.isatty() or not sys.stdout.isatty():return None
+def get_optional_input(text, timeout=15):
+    if not sys.stdin.isatty() or not sys.stdout.isatty():return ""
+    value = []
+    cursor = 0
+    start = time.monotonic()
+    print(text, end="", flush=True)
+    def redraw():
+        print("\r" + text + "".join(value) + "\x1b[K", end="", flush=True)
+        print(f"\r{text}{''.join(value[:cursor])}", end="", flush=True)
+    def insert(char):
+        nonlocal cursor
+        value.insert(cursor, char)
+        cursor += 1
+        redraw()
+    def backspace():
+        nonlocal cursor
+        if cursor > 0:
+            cursor -= 1
+            value.pop(cursor)
+            redraw()
+    def delete():
+        if cursor < len(value):
+            value.pop(cursor)
+            redraw()
+    def move_left():
+        nonlocal cursor
+        if cursor > 0:
+            cursor -= 1
+            redraw()
+    def move_right():
+        nonlocal cursor
+        if cursor < len(value):
+            cursor += 1
+            redraw()
+    def move_home():
+        nonlocal cursor
+        cursor = 0
+        redraw()
+    def move_end():
+        nonlocal cursor
+        cursor = len(value)
+        redraw()
     if os.name == "nt":
-        print(text, end="", flush=True)
-        password = ""
-        start = time.monotonic()
+        import msvcrt
         while time.monotonic() - start < timeout:
-            if msvcrt.kbhit():
-                char = msvcrt.getwch()
-                if char in ("\r", "\n"):
-                    print()
-                    return password or None
-                elif char == "\x03":raise KeyboardInterrupt
-                elif char == "\b":password = password[:-1]
-                else:password += char
-            time.sleep(0.05)
+            if not msvcrt.kbhit():
+                time.sleep(0.01)
+                continue
+            char = msvcrt.getwch()
+            if char in ("\r", "\n"):
+                print()
+                return "".join(value) or ""
+            if char == "\x03":raise KeyboardInterrupt
+            if char in ("\x00", "\xe0"):
+                key = msvcrt.getwch()
+                if key == "K":move_left()
+                elif key == "M":move_right()
+                elif key == "G":move_home()
+                elif key == "O":move_end()
+                elif key == "S":delete()
+                continue
+            if char == "\b":backspace()
+            elif char == "\x1b":continue
+            else:insert(char)
         print()
-        return None
+        return ""
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        print(text, end="", flush=True)
-        password = ""
-        start = time.monotonic()
         while time.monotonic() - start < timeout:
             remaining = timeout - (time.monotonic() - start)
             ready, _, _ = select.select([fd], [], [], remaining)
             if not ready:
                 print()
-                return None
-            char = os.read(fd, 1).decode("utf-8", errors="ignore")
-            if char in ("\r", "\n"):
+                return ""
+            char = os.read(fd, 1)
+            if char in (b"\r", b"\n"):
                 print()
-                return password or None
-            elif char == "\x03":raise KeyboardInterrupt
-            elif char in ("\x7f", "\b"):password = password[:-1]
-            else:password += char
+                return "".join(value) or None
+            if char == b"\x03":raise KeyboardInterrupt
+            if char in (b"\x7f", b"\x08"):
+                backspace()
+                continue
+            if char == b"\x1b":
+                ready, _, _ = select.select([fd], [], [], 0.03)
+                if not ready:continue
+                seq = os.read(fd, 1)
+                if seq == b"[":
+                    ready, _, _ = select.select([fd], [], [], 0.03)
+                    if not ready:continue
+                    key = os.read(fd, 1)
+                    if key == b"D":move_left()
+                    elif key == b"C":move_right()
+                    elif key == b"H":move_home()
+                    elif key == b"F":move_end()
+                    elif key == b"3":
+                        ready, _, _ = select.select([fd], [], [], 0.03)
+                        if ready and os.read(fd, 1) == b"~":delete()
+                continue
+            if char[0] < 128:insert(char.decode())
+            else:
+                expected = (2 if char[0] & 0xE0 == 0xC0 else 3 if char[0] & 0xF0 == 0xE0 else 4 if char[0] & 0xF8 == 0xF0 else 1)
+                raw = char
+                for _ in range(expected - 1):
+                    ready, _, _ = select.select([fd], [], [], 0.05)
+                    if not ready:break
+                    raw += os.read(fd, 1)
+                decoded = raw.decode("utf-8", errors="replace")
+                for c in decoded:insert(c)
         print()
-        return None
+        return ""
     finally:termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 def safe_path(base_dir, req_path):
     base = os.path.realpath(base_dir)
@@ -88,14 +160,14 @@ def vfs_upload_ranges_complete(ranges, size):
         if cursor >= size:return True
     return False
 class FileServer:
-    def __init__(self, host="127.0.0.1", port=9000, password=None, auth_key_password=None, key_dir="./keys",salt_file="./server_salt.bin"):
+    def __init__(self, host="127.0.0.1", port=9000, password=None, **kwargs):
         if not password:raise ValueError("Server password is required.")
         self.shared_dir = SHARED_DIR
         self._vfs_mutation_lock = threading.RLock()
         self._vfs_upload_lock = threading.RLock()
         self._vfs_uploads = {}
         os.makedirs(self.shared_dir, exist_ok=True)
-        try:self.server = network.TCPServer(host=host,port=port,password=password,auth_key_password=auth_key_password,auth_key_dir=key_dir,salt_file=salt_file,on_exchange=self.handle_exchange,)
+        try:self.server = network.TCPServer(host=host,port=port,password=password,on_exchange=self.handle_exchange,**kwargs)
         except Exception as e:traceback.print_exception(e);raise OSError
         print(f"[*] File Server active on tcp://{host}:{port} | Serving: {self.shared_dir}")
     def _expire_vfs_uploads(self):
@@ -455,12 +527,11 @@ if __name__ == "__main__":
         retrys-=1
         retry=False
         if password == None:password = getpass.getpass("Server password: ")
-        auth_key_password = get_optional_password("Auth key password: ")
-        if auth_key_password==None:auth_key_password=''
+        enable_bootstrap = get_optional_input("Enable bootstrapping? [y/N]: ",5).lower().startswith('y')
+        newTOTP = get_optional_input("Setup TOTP? [y/N]: ",5).lower().startswith('y')
         if not isinstance(password,str):raise TypeError('password must be a string')
-        if not isinstance(auth_key_password,str):raise TypeError('auth_key_password must be a string')
         try:
-            srv = FileServer(IP,password=password,auth_key_password=auth_key_password)
+            srv = FileServer(IP,password=password,newTOTP=newTOTP,enable_bootstrap=enable_bootstrap)
         except OSError:
             retry=True
             password=None
