@@ -315,11 +315,21 @@ class TCPClient:
         keys = Encryption.gen_x25519(True)
         self._send_handshake(Encryption.encryptGCM(keys[1], tss))
         self.ekey = Encryption.kdf_fast(Encryption.shared_secret(keys[0], pub_key), tss)
+        def _send_enc(payload):
+            ctr = self.sc.to_bytes(8, "big")
+            self.sc += 1
+            self._send_handshake(ctr + Encryption.encryptGCM(payload, self.ekey, aad=ctr + b"0"))
+        def _recv_enc(raw_payload):
+            ctr = raw_payload[:8]
+            counter = int.from_bytes(ctr, "big")
+            if counter <= self.rc:raise ProtocolError("Counter Error")
+            self.rc = counter
+            return Encryption.decryptGCM(raw_payload[8:], self.ekey, aad=ctr + b"1")
         auth_test_key = Encryption.gen_ed25519(True)
         raw = self._recv_handshake(timeout=STD_TIMEOUT)
         if raw is None:raise ProtocolError("Handshake timed out")
-        pub = self._recv_enc(raw)
-        self._send_enc(auth_test_key[1])
+        pub = _recv_enc(raw)
+        _send_enc(auth_test_key[1])
         def send_signed_enc(data):
             ctr = self.sc.to_bytes(8, "big")
             self.sc += 1
@@ -336,22 +346,12 @@ class TCPClient:
             return Encryption.decryptGCM(encrypted, self.ekey, aad=ctr + b"1")
         raw = self._recv_handshake(timeout=STD_TIMEOUT)
         if raw is None:raise ProtocolError("Handshake timed out")
-        nonce = self._recv_enc(raw)
+        nonce = _recv_enc(raw)
         send_signed_enc(nonce)
         client_nonce = os.urandom(256)
-        self._send_enc(client_nonce)
+        _send_enc(client_nonce)
         if recv_signed_enc() != client_nonce:raise ProtocolError("Bad Sig")
         self._backend.auth_finished()
-    def _send_enc(self, payload):
-        ctr = self.sc.to_bytes(8, "big")
-        self.sc += 1
-        self._send_handshake(ctr + Encryption.encryptGCM(payload, self.ekey, aad=ctr + b"0"))
-    def _recv_enc(self, raw_payload):
-        ctr = raw_payload[:8]
-        counter = int.from_bytes(ctr, "big")
-        if counter <= self.rc:raise ProtocolError("Counter Error")
-        self.rc = counter
-        return Encryption.decryptGCM(raw_payload[8:], self.ekey, aad=ctr + b"1")
     def send(self, payload, eid=None):
         if eid is not None and (not isinstance(eid, bytes) or len(eid) != EID_SIZE):raise ValueError("eid must be exactly 8 bytes")
         with self._lock:
