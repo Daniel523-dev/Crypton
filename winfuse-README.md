@@ -441,17 +441,3 @@ The Cloud Files API implementation should be modified carefully. Small changes t
 IT WORKS.
 DO NOT TOUCH THE BLACK MAGIC.
 ```
-
-## Source Repository
-
-The WinFUSE implementation was reused from my WinFUSE repository:
-
-https://github.com/Daniel523-dev/winFUSE/
-
-## License
-
-WinFUSE is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-See the `LICENSE` file for the complete license text.
-
-Copyright © 2026 Daniel523-dev.
