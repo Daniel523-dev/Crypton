@@ -15,8 +15,7 @@ Crypton is a cross-platform, self-hosted file-storage project for Windows and Li
 
 ## Quick start
 > [!IMPORTANT]
-> **Before exploring Crypton, read `network-README.md` and examine `network.py` and `backend.cpp`!**
-> ### **Before exploring Crypton, read `network-README.md` and examine `network.py`!**
+> ### **Before exploring Crypton, read `network-README.md` and examine `network.py` and `backend.cpp`!**
 
 Start with [`SETUP.md`](SETUP.md) for dependency installation, compiling the native backend, server startup, and first-client enrollment.
 
