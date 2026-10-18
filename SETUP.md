@@ -20,7 +20,7 @@ On Linux, use `python3` if that is the name of your Python interpreter. Keep the
 
 The mount layer is platform-specific and is not fully contained in the files covered by this guide.
 
-- **Windows:** `client.py` imports `winfuse3`. Install the dependencies required by that backend, including WinFsp where its current integration requires it. See [`winfuse3-README.md`](winfuse3-README.md).
+- **Windows:** `client.py` imports `winfuse3`. Install the dependencies required by that backend, including WinFsp where its current integration requires it. See [`winfuse-README.md`](winfuse-README.md).
 - **Linux:** `client.py` imports `vfs`. Install the Python FUSE binding and system FUSE packages required by the project's VFS integration. See [`vfs-README.md`](vfs-README.md).
 
 The `backend` networking extension is required even when you use the Python storage API without mounting a drive.
