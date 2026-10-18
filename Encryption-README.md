@@ -1,6 +1,6 @@
 # `Encryption.py` — Cryptographic Utilities
 
-`Encryption.py` provides Python wrappers for hashing, key derivation, symmetric encryption, key agreement, digital signatures, and X.509 certificate helpers. The application networking code uses only part of this module; using a helper here does not mean the running TCP protocol uses TLS.
+`Encryption.py` provides Python wrappers for hashing, key derivation, symmetric encryption, key agreement, digital signatures, and X.509 certificate helpers. The application networking code uses only a few functions from module.
 
 ## Requirements
 
