@@ -181,4 +181,4 @@ Follow Psudo-TPM's own release instructions for `TPM.exe`, `TPM_client.py`, and 
 
 **Normal authentication fails** — Check that the selected identity file and client password match. Confirm the client has not been deauthorized and the server salt/state files have not been replaced or restored inconsistently.
 
-**Mount fails** — Install the correct platform mount dependencies and check the terminal output. Review [`vfs-README.md`](vfs-README.md) or [`winfuse3-README.md`](winfuse3-README.md).
+**Mount fails** — Install the correct platform mount dependencies and check the terminal output. Review [`vfs-README.md`](vfs-README.md) or [`winfuse-README.md`](winfuse-README.md).
