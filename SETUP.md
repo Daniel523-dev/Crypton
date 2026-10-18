@@ -25,7 +25,7 @@ The mount layer is platform-specific and is not fully contained in the files cov
 
 The `backend` networking extension is required even when you use the Python storage API without mounting a drive.
 
-## 2. Build the `backend` extension
+## 2. Build the `backend` extension (If you are using python 3.14, you may download backend.cp314-win_amd64.pyd instead)
 
 Install the build dependency:
 
