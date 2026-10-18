@@ -1,137 +1,117 @@
-# Encryption.py
+# `Encryption.py` — Cryptographic Utilities
 
-`Encryption.py` is a comprehensive Python utility module that provides a high-level, easy-to-use interface for common cryptographic operations. It wraps the powerful `cryptography` library along with `argon2` and optionally `blake3` to handle hashing, key derivation, symmetric/asymmetric encryption, digital signatures, and certificate management.
-
-## Features
-
-* **Hashing & Key Derivation (KDF)**
-* Fast hashing using `blake3` (with a fallback to `sha3_256`/`shake_256`).
-* Secure Key Derivation using `argon2id` with configurable cost levels (`kdf_fast`, `kdf_slow`, etc.).
-
-
-* **Symmetric Encryption**
-* **AES-CTR** for streaming/large data encryption.
-* **AES-GCM** for authenticated symmetric encryption.
-* **ChaCha20-Poly1305** for fast, secure authenticated encryption.
-
-
-* **Asymmetric Cryptography**
-* Key Exchange (ECDH) via **X25519** and **X448**.
-* Digital Signatures via **Ed25519** and **Ed448**.
-
-
-* **Public Key Infrastructure (PKI) & TLS**
-* Generate self-signed TLS certificates.
-* Create Certificate Authorities (CAs).
-* Generate, sign, and validate X.509 certificates.
-* Flexible key loading (PEM, DER, Raw) with automatic format detection.
-
-
+`Encryption.py` provides Python wrappers for hashing, key derivation, symmetric encryption, key agreement, digital signatures, and X.509 certificate helpers. The application networking code uses only part of this module; using a helper here does not mean the running TCP protocol uses TLS.
 
 ## Requirements
 
-To use this module, you need to install the following dependencies:
+Install the Python packages:
 
 ```bash
-pip install cryptography argon2-cffi
+python -m pip install cryptography argon2-cffi blake3
 ```
 
-**Optional (but recommended for performance):**
-```bash
-pip install blake3
-```
-*If `blake3` is not installed, the module will automatically fall back to standard library `hashlib` (SHA-3) and `HKDF`.*
+The project-local `util.py` module is also imported. `blake3` is used when installed; otherwise `HASH` falls back to SHA-3/SHAKE hashing. `basic_kdf` uses BLAKE3 when available and an HKDF-SHA-512 path when it is not, so the fallback behavior is not byte-for-byte compatible with the BLAKE3 path. Use the same environment/configuration on both sides when deriving keys.
 
-## Usage Examples
+## API overview
 
-### Hashing and Key Derivation
+| Function | Purpose |
+|---|---|
+| `HASH(data, l=32, hex=False)` | Hash bytes and return a digest or hexadecimal text. Uses BLAKE3 when installed. |
+| `basic_kdf(master, salt, length=32)` | Lightweight deterministic derivation helper. It is not a password-hardening KDF. |
+| `kdf(password, salt, level=5)` | Argon2id key derivation using the configured level. |
+| `kdf_fast(password, salt)` / `kdf_slow(password, salt)` | Convenience wrappers for Argon2id levels 0 and 10. |
+| `encrypt(data, key)` / `decrypt(blob, key)` | AES-CTR encryption/decryption; provides no authentication by itself. |
+| `encryptGCM(data, key, aad=None)` / `decryptGCM(blob, key, aad=None)` | AES-GCM authenticated encryption/decryption. AAD must match during decryption. |
+| `gen_chacha20()` | Generates a 32-byte ChaCha20 key. |
+| `encrypt_chacha(data, key, auth=True)` / `decrypt_chacha(blob, key, auth=True)` | ChaCha20-Poly1305 when `auth=True`; raw ChaCha20 stream encryption when `auth=False`. |
+| `gen_x25519(overkill=False)` / `shared_secret(private, public)` | X25519 key generation/shared secret; `overkill=True` selects X448. |
+| `gen_ed25519(overkill=False)` / `ed25519_sign(private, data)` / `ed25519_verify(public, blob)` | Ed25519 signatures; `overkill=True` selects Ed448 for key generation. |
+| `generate_tls(...)` | Writes a self-signed ECDSA P-256 TLS certificate and its private key. |
+| `gen_CA(...)` | Generates CA key/certificate files. Review the implementation before using it in a production PKI. |
+
+## Hashing and key derivation
 
 ```python
+import os
 import Encryption as enc
 
-# Generate a fast hash
-
-digest = enc.HASH(b"my_data", l=32, hex=True)
-
-# Derive a strong key from a password
+payload = b"sample data"
+digest_hex = enc.HASH(payload, l=32, hex=True)
 
 salt = os.urandom(16)
-key = enc.kdf_fast(b"my_password", salt)
+# Argon2id; kdf_fast is a convenience level, not a recommendation for every use.
+key = enc.kdf_fast(b"a user-supplied password", salt)
+assert len(digest_hex) == 64
 ```
 
-### Symmetric Encryption (AES-GCM)
+Use unique random salts for password-derived keys and store the salt with the protected ciphertext or credential material. Choose KDF cost based on the threat model and deployment performance, not the helper name alone.
+
+## Authenticated symmetric encryption (AES-GCM)
+
+```python
+import os
+import Encryption as enc
+
+master_key = os.urandom(32)
+plaintext = b"Sensitive information"
+associated_data = b"record:123"
+
+ciphertext = enc.encryptGCM(plaintext, master_key, aad=associated_data)
+recovered = enc.decryptGCM(ciphertext, master_key, aad=associated_data)
+assert recovered == plaintext
+```
+
+The actual function signatures are `encryptGCM(data, key, aad=None)` and `decryptGCM(encrypted, key, aad=None)`. They do **not** accept a `secure_kdf=True` parameter. Internally, the functions create a random salt and nonce, derive a subkey with `basic_kdf`, and store the nonce and salt alongside the AEAD ciphertext. The same `aad` value must be supplied when decrypting or authentication will fail.
+
+## Key exchange
 
 ```python
 import Encryption as enc
 
-key = b"super_secret_key_32_bytes_long!!"
-data = b"Sensitive information"
+alice_private, alice_public = enc.gen_x25519()
+bob_private, bob_public = enc.gen_x25519()
 
-# Encrypt
-
-ciphertext = enc.encryptGCM(data, key, secure_kdf=True)
-
-# Decrypt
-
-plaintext = enc.decryptGCM(ciphertext, key, secure_kdf=True)
+alice_secret = enc.shared_secret(alice_private, bob_public)
+bob_secret = enc.shared_secret(bob_private, alice_public)
+assert alice_secret == bob_secret
 ```
 
-### Digital Signatures (Ed25519)
+Set `overkill=True` to select X448 in `gen_x25519`. Keep private keys private and use each shared secret only in a protocol that has appropriate authentication and key separation.
+
+## Digital signatures
 
 ```python
 import Encryption as enc
-
-# Generate key pair
 
 private_key, public_key = enc.gen_ed25519()
-
-data = b"Data to be signed"
-
-# Sign the data (returns signature + original data appended)
-
-signed_data = enc.ed25519_sign(private_key, data)
-
-# Verify the data (returns the original data if valid)
-
-verified_data = enc.ed25519_verify(public_key, signed_data)
+message = b"Data to be signed"
+signed_blob = enc.ed25519_sign(private_key, message)
+verified_message = enc.ed25519_verify(public_key, signed_blob)
+assert verified_message == message
 ```
 
-### Key Exchange (X25519)
+The current helper serializes the signature followed by the original message. Do not parse that combined format using an assumed fixed signature length without accounting for the selected algorithm: Ed25519 uses a 64-byte signature and Ed448 uses a 114-byte signature.
 
-```python
-import Encryption as enc
-
-# Alice generates keys
-
-alice_priv, alice_pub = enc.gen_x25519()
-
-# Bob generates keys
-
-bob_priv, bob_pub = enc.gen_x25519()
-
-# Both derive the same shared secret
-
-alice_shared = enc.shared_secret(alice_priv, bob_pub)
-bob_shared = enc.shared_secret(bob_priv, alice_pub)
-
-assert alice_shared == bob_shared
-```
-
-### Generating a TLS Certificate
+## Certificate generation
 
 ```python
 import Encryption as enc
 
 enc.generate_tls(
-cert_path="cert.pem",
-key_path="key.pem",
-common_name="localhost",
-valid_days=365
+    cert_path="cert.pem",
+    key_path="key.pem",
+    common_name="localhost",
+    san_dns=["localhost"],
+    valid_days=365,
 )
 ```
 
-## Security Notes
+This helper creates a self-signed certificate; clients will not automatically trust it. The key is written unencrypted, so protect the file using filesystem permissions and encrypted storage. The supplied `network.py`/`backend.cpp` transport does not use this certificate helper; generating a certificate does not turn Crypton's custom protocol into TLS.
 
-* **KDF Levels:** The module uses a predefined dictionary (`KDF_LEVELS`) to scale the time and memory costs of Argon2 hashing. Higher levels are more secure against brute force but take longer to compute.
-* **Randomness:** Uses `os.urandom()` and the `secrets` module for secure random number and ID generation.
-* **Overkill Mode:** Asymmetric generation functions (`gen_x25519`, `gen_ed25519`, `gen_keys`) include an `overkill=True` flag that upgrades the algorithms from 255-bit (X25519/Ed25519) to 448-bit (X448/Ed448) for extreme security margins.
+## Security notes
+
+- **Prefer authenticated encryption.** `encrypt()`/`decrypt()` use AES-CTR without an authentication tag. They do not detect ciphertext tampering. `encrypt_chacha(..., auth=False)` is also unauthenticated. Add an independently designed authentication scheme only if you understand the associated risks; otherwise use the AEAD functions.
+- **Do not use `basic_kdf` to harden weak passwords.** Use `kdf`, `kdf_fast`, or `kdf_slow` with random salts when password-hardening is required.
+- **Keep nonces and salts in their expected formats.** Do not modify the ciphertext layout or reuse nonce/key combinations with AEAD algorithms.
+- **Review fallback behavior.** Installing or removing `blake3` changes `HASH` and `basic_kdf` behavior in this implementation. Do not silently mix output from different paths for stored keys or protocol values.
+- **This is a utility module, not a security audit.** Review the code and have the complete protocol assessed before relying on it for high-risk data.

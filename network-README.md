@@ -1,272 +1,110 @@
-# Crypton — Secure Networking Module
+# Crypton Networking Module (`network.py`)
 
-Crypton's networking module provides encrypted message exchange over TCP using ZeroMQ. It handles the custom authentication handshake, session-key establishment, encrypted message transport, exchange-based routing, and background socket processing.
+`network.py` implements Crypton's custom TCP authentication and message layer. It handles administrator and client authentication, TOTP-based bootstrap enrollment, session-key setup, authenticated message encryption, exchange IDs, and routing callbacks. It delegates socket I/O, framing, connection queues, and worker pools to the native Python extension built from [`backend.cpp`](backend.cpp).
 
-The module separates network transport from application logic. It supports multiple exchange IDs over a connection, an optional server-side message callback, queued message handling, password-protected credential files, and administrator-controlled enrollment for new clients.
+**Transport note:** The current source uses the native `backend` TCP extension. It does not use ZeroMQ, despite older documentation that described `pyzmq`. The protocol is custom and should not be treated as TLS or as independently audited merely because it uses standard cryptographic primitives.
 
-Crypton uses a custom protocol built on cryptographic primitives rather than SSH or a conventional file-transfer protocol. This document covers the behavior of `network.py`; it does not document the project's broader application protocol or installation requirements.
+## Dependencies
 
-## Core Features
+Runtime dependencies include:
 
-- **Exchange-based routing:** Messages are associated with exchange IDs (`eid`) so requests and responses can be routed over a persistent client connection.
-- **Authenticated encryption:** Application payloads are protected using AES-GCM through the project's encryption helpers.
-- **Two-part key establishment:** The handshake combines a temporary Diffie–Hellman shared secret with a second shared secret involving the server-side key pair assigned to the client's bearer credential.
-- **Administrator-controlled enrollment:** A new client can use the administrator bootstrap archive to authenticate an enrollment exchange and receive its client-specific bearer credential.
-- **Encrypted credential storage:** Server-side key pairs, the client's saved credential, and administrator signing-key material are encrypted at rest using password-derived keys.
-- **Password-strength checks:** Password strength is estimated when deriving at-rest encryption keys.
-- **Replay checks:** Monotonically increasing counters help reject duplicate or older messages within an established session.
-- **Background I/O:** Dedicated I/O threads and queues separate socket handling from most application-level work.
-- **Payload accounting:** The implementation tracks queued payload bytes and defines a 256 MiB accounting threshold to help limit excessive buffering.
-- **Opaque application payloads:** This layer transports bytes and leaves application message formats to higher-level components.
-
-## Security Model
-
-The networking layer aims to provide confidentiality and integrity for application messages, authenticate clients through a secret bearer credential, and establish a fresh session key for each connection. Its security depends on the cryptographic helper implementations, key storage, random-number generation, correct protocol use, and operational handling of credentials. The custom protocol has not been established as formally verified or independently audited merely by using established primitives.
-
-### Algorithms used by the networking handshake
-
-The calls in `network.py` use the helpers `Encryption.gen_x25519(True)` and `Encryption.gen_ed25519(True)`. In the supplied `Encryption` implementation, the `True` mode selects **X448** and **Ed448**, respectively. The helper names therefore do not literally describe the algorithms used by this networking configuration.
-
-- **X448:** Creates shared secrets through Diffie–Hellman key agreement.
-- **Ed448:** Signs selected bootstrap and session-confirmation messages.
-- **Argon2id:** Derives at-rest keys and the handshake's session-root material using the configured parameters in the encryption helpers.
-- **AES-GCM:** Encrypts and authenticates handshake and application payloads.
-- **Counters and authenticated associated data (AAD):** Protect message metadata and help detect reused or older records.
-
-### Normal handshake overview
-
-For a previously enrolled client, the handshake proceeds conceptually as follows:
-
-1. The client and server exchange fresh X448 public keys and independently derive a temporary shared secret (`tss`). The initial ephemeral public-key exchange is not independently authenticated.
-2. The client derives a compact identifier from its saved bearer public key and sends that identifier encrypted under `tss`. The server uses the identifier to locate the corresponding stored server-side key pair.
-3. The client generates another ephemeral X448 key pair and sends its public key protected under `tss`.
-4. The client calculates a shared secret using its new ephemeral private key and the saved bearer public key. The server calculates the matching secret using the corresponding stored private key and the client's ephemeral public key.
-5. Both sides combine that second shared secret with `tss` through the configured KDF to derive the session-root material.
-6. The peers exchange temporary Ed448 signing public keys inside the encrypted handshake and perform signed nonce challenges to confirm participation in the new session.
-7. After the handshake succeeds, application messages use AES-GCM with per-message random salts and IVs. Counters, exchange IDs where applicable, and direction markers are authenticated as additional data.
-
-The two shared secrets have different roles: `tss` protects the early handshake messages, while the second exchange ties the session derivation to the server-side key pair associated with the client's credential. The combined construction is intended to prevent an intermediary that establishes a different temporary secret with each endpoint from transparently completing the rest of the handshake. This is a description of the intended design, not a formal security proof.
-
-### Client credential model
-
-The client's saved credential is deliberately a **secret bearer credential**. During enrollment, the server creates an X448 key pair and retains both key components encrypted at rest. The client receives the corresponding public key and stores it encrypted under the client's key-storage password. Although this is mathematically a public key, Crypton intentionally treats the saved copy as secret authorization material.
-
-Possession of the decrypted bearer public key allows a client to derive the credential identifier and participate in the session-key exchange. Someone who obtains the decrypted credential may therefore be able to impersonate its holder; the server does not verify a separate, persistent client private key in the normal handshake. The local password protects the stored file, but it is not independently sent to or verified by the server during normal authentication.
-
-The credential identifier is derived with a requested length of six bytes, making it a compact 48-bit lookup value. It is an index into the server's credential store, not the bearer credential itself. Identifier collisions are possible, so this namespace is intended for the project's expected deployment scale rather than an arbitrarily large population.
-
-### Bootstrap and enrollment
-
-The administrator bootstrap archive contains Ed448 signing-key material protected by a password-derived key. During initial enrollment:
-
-1. The client loads the archive and decrypts the administrator signing keys using the supplied archive password.
-2. Client and server establish a temporary X448 shared secret.
-3. The server sends a random nonce. The client signs the encrypted nonce using the administrator private key, and the server verifies the signature and nonce.
-4. The server generates a new X448 key pair for this client's bearer credential and sends the public key in a signed, encrypted message.
-5. The client verifies the signature, accepts the key, and sends a signed acknowledgement.
-6. The server stores the associated X448 key pair encrypted with its at-rest key. The client stores the public-key credential encrypted with its own at-rest key.
-7. The connection proceeds through the normal session-key establishment and confirmation steps.
-
-The administrator signing keys authorize enrollment; they are not the application session key. The temporary Ed448 keys used later in the normal handshake are session-confirmation keys, not persistent client identities.
-
-**Bootstrap archive rotation is intentional.** After a bootstrap attempt that enters the bootstrap path, the server regenerates its administrator signing key and rewrites the archive, including after an unsuccessful attempt. This is a deliberate availability trade-off in the current design: handshake workers are serialized, pending handshakes are queued, and established sessions retain their already-derived session keys. However, failed bootstrap attempts can invalidate a previously distributed archive and delay legitimate enrollment until the current archive is distributed. Disabling bootstrapping prevents the `REQ_KEY` path from being accepted and avoids this bootstrap-specific rotation. It does not eliminate all resource costs from unauthenticated handshake attempts.
-
-Distribute the current bootstrap archive only through a trusted, authenticated channel. Keep the archive password separate from the server's at-rest password and the client's key-storage password.
-
-### In transit
-
-- **Authenticated encryption:** AES-GCM is used to protect message confidentiality and detect changes to the ciphertext or authenticated metadata.
-- **Per-message material:** The encryption helper prepends a random 12-byte IV and 32-byte salt to each encrypted record. The salt is used to derive a per-message AES key from the session-root material.
-- **Direction markers:** Client-to-server and server-to-client records use different direction markers in AAD so that a record cannot simply be copied unchanged into the opposite direction.
-- **Counters:** Each side maintains increasing message counters. A counter must be greater than the last accepted counter; it does not have to be exactly the next integer. This permits gaps while rejecting duplicate or older counters.
-- **Exchange IDs:** Application exchange IDs are included in AAD and are used for message routing. The server suppresses repeated incoming messages associated with an already-seen exchange ID while that ID remains in its duplicate-tracking set.
-- **Challenge-response:** Random nonces and temporary Ed448 signatures provide explicit confirmation that the peer can participate in the newly established encrypted session.
-
-The initial ephemeral X448 public keys are sent before the session root exists and are not independently authenticated at that point. The later exchange involving the enrolled server key and the key-confirmation messages are intended to bind the completed session to the stored credential. An active intermediary may still disrupt handshakes, observe exposed protocol metadata such as the compact credential identifier if it can interpose on the initial exchange, or cause availability problems.
-
-### At rest
-
-- The server's stored credential key pairs are encrypted using the server at-rest key.
-- The client's bearer credential is encrypted using the client's key-storage password and its stored salt.
-- The administrator signing-key material in the bootstrap archive is encrypted using a key derived from the separate administrator archive password.
-- Argon2id and random salts make offline password guessing more expensive, but the protection still depends on password quality and safeguarding the passwords and files.
-
-The server decrypts application messages before forwarding them to `on_exchange` or placing them in its receive queue. This is not a zero-knowledge design: the server can access application plaintext.
-
-## Usage
-
-### 1. Server setup with a callback
-
-The optional `on_exchange` callback is called with `(server, eid, data, client_id)` when an incoming application message is accepted for an exchange.
-
-```python
-import time
-from network import TCPServer
-
-def handle_message(server, eid, data, client_id):
-    print(f"Received from {client_id}: {data!r}")
-
-    # Reply to the same exchange and authenticated client.
-    server.send(
-        b"Message acknowledged!",
-        eid=eid,
-        client_id=client_id,
-    )
-
-server = TCPServer(
-    host="127.0.0.1",
-    port=8888,
-    password="Use-A-Strong-Unique-Server-Password!",
-    auth_key_password="Use-A-Separate-Strong-Admin-Password!",
-    auth_key_dir="./server_keys",
-    salt_file="./server_salt.bin",
-    on_exchange=handle_message,
-)
-
-try:
-    # Keep the process alive while the I/O thread handles connections.
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    print("Shutting down Crypton networking server.")
-finally:
-    server.close()
+```bash
+python -m pip install cryptography argon2-cffi blake3 zxcvbn pyotp
 ```
 
-The server creates the administrator bootstrap archive at `./server_keys/auth_key` when the supplied administrator password passes its configured validation. Transfer the current archive securely to authorized clients that need initial enrollment.
+The local `Encryption.py` and `util.py` modules and the compiled `backend` extension are required. See [`backend-README.md`](backend-README.md) for compiling the extension.
 
-Use different passwords for server key storage and administrator bootstrap access. Never commit generated keys, archives, passwords, or secret material to version control.
+## Authentication and enrollment
 
-### 2. Client setup
+The current implementation uses TOTP codes rather than a ZIP-based administrator bootstrap archive.
 
-A new client uses the administrator archive to authenticate enrollment. After enrollment, the same path is replaced by the encrypted client bearer-credential file.
+- **Server password:** Used to derive the server's at-rest key for protected authorization/TOTP material. A salt is stored in `./server_salt.bin`.
+- **Administrator TOTP:** Allows access to the client-side administrator console. On first server startup, or after an explicit reset, the server prints a Base32 secret. Import it into an authenticator app and keep it private.
+- **Bootstrap TOTP:** A separate TOTP secret that the administrator configures and verifies in the admin console. It must be enabled before a new client can enroll.
+- **Client password:** Protects the client's stored identity material at rest. It is distinct from both TOTP secrets.
+- **Client identity file:** A new client starts with a path that does not yet exist (default `./auth_key`). After successful bootstrap it stores encrypted identity material at that path. A future connection uses that file for normal authentication.
+
+Recommended enrollment sequence:
+
+1. Log in to admin mode with the administrator TOTP.
+2. Generate and verify the bootstrap TOTP using the admin console.
+3. Enable bootstrap enrollment only for the planned enrollment window.
+4. On the new client, use a new identity path and provide a current bootstrap TOTP code when prompted.
+5. Disable bootstrap enrollment after the authorized client has enrolled.
+
+Do not distribute the administrator TOTP secret to regular clients.
+
+## Cryptographic flow (high-level)
+
+The networking implementation calls `Encryption.gen_x25519(True)` for its handshake key pairs; in `Encryption.py`, this selects X448. It derives session material from the key agreement and applies AES-GCM to handshake/application payloads. Message counters and authenticated associated data bind encrypted payloads to their exchange and direction, and the implementation rejects non-increasing counters.
+
+This is a summary of the code, not a security proof. The protocol is custom, the complete handshake should be independently reviewed, and the implementation does not become TLS through use of AES-GCM or through the separate certificate helper in `Encryption.py`.
+
+## Message exchange
+
+Exchange IDs are exactly 8 bytes. A client can create an exchange and wait for the matching response:
 
 ```python
-from getpass import getpass
 from network import TCPClient
 
 client = TCPClient(
     host="127.0.0.1",
-    port=8888,
-    password=getpass("Client key-storage password: "),
-    auth_key="./client_auth",
-    auth_key_password_callback=lambda: getpass(
-        "Administrator archive password: "
-    ),
+    port=9000,
+    password="a strong client password",
+    auth_key="./auth_key",
 )
-
 try:
-    # Send an application message and receive its exchange ID.
-    eid = client.send(b"Hello, Crypton!")
+    eid = client.send(b"Hello, Crypton")
     response = client.recv(eid, timeout=5.0)
-
     if response is not None:
-        print(f"Server replied: {response!r}")
+        print(response)
 finally:
     client.close()
 ```
 
-Replace the example address with the actual server address. The networking interface transports bytes. Encode textual messages with UTF-8 when needed and decode received payloads only when their format is known. Production applications should handle `queue.Empty` and other expected communication errors.
+This example assumes that `./auth_key` is an already-enrolled identity file. For first-time enrollment, pass an `auth_key_code_callback` to provide the current bootstrap TOTP code. Use interactive prompts rather than hard-coded passwords in real applications.
 
-The `auth_key_password_callback` is used to obtain the administrator archive password while the supplied file is a ZIP archive. It is not a replacement for the client's separate key-storage password.
+Callbacks receive application payloads after the networking layer has decrypted them. Keep callback code short, handle errors, and avoid assuming that a queued send means the remote application processed the message.
 
-### 3. Receive messages without a callback
+## `TCPServer` API
 
-If `on_exchange` is omitted, incoming application messages are placed in the server receive queue and can be retrieved with `recv()`.
-
-```python
-import queue
-from network import TCPServer
-
-server = TCPServer(
-    host="127.0.0.1",
-    port=8888,
-    password="Use-A-Strong-Unique-Server-Password!",
-    auth_key_password="Use-A-Separate-Strong-Admin-Password!",
-    auth_key_dir="./server_keys",
-)
-
-try:
-    while True:
-        try:
-            eid, data, client_id = server.recv(timeout=5.0)
-        except queue.Empty:
-            continue
-
-        print(f"Received from {client_id}: {data!r}")
-        server.send(
-            b"Message acknowledged!",
-            eid=eid,
-            client_id=client_id,
-        )
-except KeyboardInterrupt:
-    pass
-finally:
-    server.close()
-```
-
-The server `recv()` method returns a tuple in this order:
-
-- `eid` — exchange identifier.
-- `data` — decrypted application payload.
-- `client_id` — the authenticated bearer-credential identifier.
-
-The method may raise `queue.Empty` when no message arrives before the timeout.
-
-### 4. Exchange IDs
-
-The client generates a random 64-byte exchange ID when `send()` is called without one.
-
-```python
-eid = client.send(b"Request payload")
-response = client.recv(eid, timeout=10.0)
-```
-
-Applications may supply an explicit byte-string exchange ID. Treat IDs as opaque values and do not reuse an ID while an earlier exchange is pending. The server tracks seen IDs to avoid dispatching duplicate requests; a request using a seen ID may be ignored while that ID remains in the tracking set.
-
-The server can reply through the same exchange by supplying `eid` to `server.send()`. The authenticated client identifier may also be supplied explicitly using `client_id`.
-
-## API Overview
-
-### `TCPServer`
-
-Constructor:
+The current constructor signature is:
 
 ```python
 TCPServer(
     host,
     port,
     password,
-    auth_key_password,
+    newTOTP=False,
     auth_key_dir="./keys",
-    salt_file="./server_salt.bin",
     on_exchange=None,
+    simult_handshakes=4,
+    simult_exchanges=4,
 )
 ```
 
-| Parameter | Description |
+| Parameter | Meaning |
 |---|---|
-| `host` | Interface address on which the server listens. |
-| `port` | TCP port for incoming connections. |
-| `password` | Password used to derive the server at-rest encryption key. |
-| `auth_key_password` | Password used to protect the administrator bootstrap archive. |
-| `auth_key_dir` | Directory for server credential keys and the administrator archive. |
-| `salt_file` | File containing the server at-rest key-derivation salt. |
-| `on_exchange` | Optional callback with signature `(server, eid, data, client_id)`. |
+| `host`, `port` | TCP interface address and port. |
+| `password` | Required password used to derive the server at-rest key. |
+| `newTOTP` | When true, generates a new administrator TOTP secret. |
+| `auth_key_dir` | Directory holding server-side client identity key pairs. |
+| `on_exchange` | Optional callback `(server, eid, data, client_id)` for incoming application messages. |
+| `simult_handshakes`, `simult_exchanges` | Worker concurrency settings passed to the native extension. |
 
-The salt file is created if it does not exist. Preserve it alongside the protected key material: losing or replacing it can prevent the original at-rest key from being derived.
+Useful methods:
 
-Methods:
+- `send(payload, eid=None, client_id=None)` — queue an encrypted message for an authenticated client. `client_id` is required.
+- `recv(client_id, eid, timeout=60)` — wait for a specific exchange on a client connection.
+- `close_client(client_id)` — close the session and clear in-memory state for that client.
+- `set_backpressure(client_id, enabled=True)` — toggle transport backpressure for a client.
+- `close()` — stop the server's native I/O backend.
 
-- `send(payload, eid=None, client_id=None)` — Queue an encrypted message for a client. An exchange ID can route a response to its associated client; an authenticated client identifier can be supplied explicitly.
-- `recv(timeout=60.0)` — Retrieve the next queued application message as `(eid, data, client_id)`. Intended for use when no callback is configured.
-- `close()` — Stop the server I/O loop and close its ZeroMQ socket.
+The server generates and persists TOTP material in relative files including `ADMIN - TOTP.bin` and, after configuration, `BOOTSTRAP - TOTP.bin`. Preserve these files with the matching `server_salt.bin` and key directory.
 
-The server `send()` method does not return a delivery confirmation. A queued message should not be assumed to have been received or processed successfully.
+## `TCPClient` API
 
-### `TCPClient`
-
-Constructor:
+Current constructor:
 
 ```python
 TCPClient(
@@ -274,66 +112,29 @@ TCPClient(
     port,
     password,
     auth_key="./auth_key",
-    auth_key_password_callback=None,
+    admin_auth_code=None,
+    auth_key_code_callback=None,
+    on_exchange=None,
+    simult_exchanges=4,
 )
 ```
 
-| Parameter | Description |
+| Parameter | Meaning |
 |---|---|
-| `host` | Server hostname or IP address. |
-| `port` | Server TCP port. |
-| `password` | Password used to derive the client's at-rest encryption key. |
-| `auth_key` | Administrator ZIP archive during enrollment or the encrypted client bearer-credential file afterward. |
-| `auth_key_password_callback` | Callable returning the administrator archive password during initial enrollment. |
+| `host`, `port` | Server hostname/IP and TCP port. |
+| `password` | Client password for at-rest key derivation. |
+| `auth_key` | Existing encrypted client identity file, or a new path for enrollment. |
+| `admin_auth_code` | Current administrator TOTP code when connecting as admin. |
+| `auth_key_code_callback` | Callback that returns the current bootstrap TOTP code during first enrollment. |
+| `on_exchange` | Optional client callback `(client, eid, payload)` for incoming exchanges. |
+| `simult_exchanges` | Worker concurrency setting passed to the native extension. |
 
-Methods:
+Methods include `send(payload, eid=None)`, `recv(eid, timeout=60)`, `set_backpressure(enabled=True)`, and `close()`. `recv()` returns the decrypted payload or `None`; it may raise for timeout or connection/protocol errors.
 
-- `send(payload, eid=None)` — Send an encrypted application payload and return its exchange ID.
-- `recv(eid, timeout=60.0)` — Wait for a response associated with the specified exchange ID.
-- `close()` — Stop the client's I/O loop and close its ZeroMQ socket.
+## Operations and security
 
-The client `recv()` method returns the decrypted response payload or `None` when no matching pending exchange exists. Waiting for an existing exchange may raise `queue.Empty` on timeout. Applications should also handle connection-related failures.
-
-## Architecture Notes
-
-### Transport and message framing
-
-The networking layer uses a ZeroMQ `ROUTER` socket on the server and a `DEALER` socket on the client, communicating over TCP. ZeroMQ provides transport-level message framing and routing. The module exchanges multipart messages containing routing information, an exchange ID, and a payload.
-
-This module does not itself define a four-byte JSON length-prefix packet format. Higher-level components may encode metadata and binary payloads before passing them to this layer. For example, a storage client may use a four-byte big-endian metadata length followed by JSON metadata and an optional binary payload; that is an application-level envelope carried inside the encrypted networking payload.
-
-### Background I/O and callbacks
-
-Both `TCPServer` and `TCPClient` use background I/O threads and queues. Calls to `send()` queue outgoing data, while `recv()` retrieves queued incoming messages or responses.
-
-The server's `on_exchange` callback executes inside the server I/O loop. A slow callback can delay additional server-side I/O processing. Keep callbacks short and delegate expensive operations to an application-managed worker queue when appropriate.
-
-### Queue management and denial of service
-
-The module defines `MAX_QUEUE_BYTES` as 256 MiB. The server tracks payload-byte accounting per connection identity, while the client tracks buffered received payload bytes across its queues. Exceeding the relevant accounting threshold can result in a connection being killed or the client's I/O loop stopping.
-
-This is payload accounting, not a strict process-wide memory limit. In particular, the pending handshake-task queue is not globally bounded, and queued handshake payload accounting is not equivalent to measuring total Python memory use. Applications should consider message-size limits, backpressure, timeouts, and resource-exhaustion risks.
-
-Handshake workers are serialized, and pending handshakes are queued. This limits concurrent handshake-worker execution but also means a handshake backlog can delay later attempts. Established sessions retain their derived session keys during bootstrap-key rotation, although heavy network traffic or callback work can still affect overall responsiveness.
-
-### Message counters and replay detection
-
-Established sessions use monotonically increasing counters for encrypted messages. Counters are authenticated as part of the associated data, and received values are checked against the previously observed counter. A counter that is reused or decreases is rejected; gaps are allowed.
-
-Exchange IDs have separate duplicate and activity tracking. Inactive exchange-tracking entries are periodically cleaned up after approximately 60 seconds. This lifecycle is distinct from the session message counters.
-
-### Credential revocation
-
-The server keeps the enrolled key pair for each bearer credential in its credential directory. Removing a credential's key files prevents the corresponding stored key pair from being selected for a future handshake. It should not be treated as immediate termination of an already established session, whose session key is already held in memory; disconnecting an active session requires separate handling.
-
-### Operational security
-
-- Use strong, unique passwords for server key storage, client key storage, and administrator bootstrap access.
-- Protect administrator archives and transfer them through trusted channels.
-- Restrict access to credential directories and salt files.
-- Back up protected key material and its associated salt files securely.
-- Never commit private keys, bootstrap archives, passwords, or generated credentials to version control.
-- Handle communication timeouts, queue exhaustion, callback errors, malformed input, and connection failures.
-- Keep application callbacks short to avoid blocking the server I/O loop.
-- Test reconnection, shutdown, authentication failure, malformed input, and resource exhaustion.
-- Obtain an independent security review before relying on the custom protocol for highly sensitive workloads.
+- Use random, unique passwords and store secrets in an approved secret manager or protected local storage.
+- Back up the server salt, server key directory, TOTP state files, and client identity files together as needed. Replacing a salt without matching encrypted material may make existing keys unusable.
+- Deauthorizing a client removes its persistent server identity keys. Existing sessions need to be disconnected separately if immediate termination is required.
+- Application payloads are plaintext inside both client and server processes. The server stores file bytes as ordinary files; enable disk encryption and operating-system access controls where at-rest protection is required.
+- Check the full implementation and threat model before exposing the listener to untrusted networks. The protocol is custom and has not been demonstrated here to have undergone an independent security audit.

@@ -1,679 +1,182 @@
 # Crypton Setup Guide
 
-This guide covers installing and configuring Crypton, running the server and clients, authorizing new clients, configuring optional Psudo-TPM password autofill, managing storage locations, and understanding important security considerations.
-
-Crypton is a cross-platform, self-hosted remote storage ecosystem with a OneDrive-like client experience. It supports Windows and Linux clients, encrypted network communication, native filesystem mounting, chunked file transfers, Windows Cloud Files API (cfAPI) integration, and Linux FUSE-based storage with local caching.
-
-## Table of Contents
-
-- [1. Requirements](#1-requirements)
-- [2. Server Setup](#2-server-setup)
-- [3. Client Setup](#3-client-setup)
-- [4. Authorizing a Client](#4-authorizing-a-client)
-- [5. Storage Locations](#5-storage-locations)
-- [6. Client Revocation](#6-client-revocation)
-- [7. Optional Psudo-TPM Integration](#7-optional-psudo-tpm-integration)
-- [8. Security Considerations](#8-security-considerations)
-- [9. Performance and Scalability](#9-performance-and-scalability)
-- [10. Troubleshooting](#10-troubleshooting)
-
----
+This guide covers the dependencies and native extension required by the current source, running the server and client, enrolling clients with TOTP, and protecting local state. Crypton can run the server and client on Windows or Linux in any combination.
 
 ## 1. Requirements
 
-Crypton supports running the server and client on Windows or Linux in any combination.
+### Python packages
 
-For example, a Windows client can connect to a Linux server, and a Linux client can connect to a Windows server.
+Install the common runtime packages into the Python environment used to run Crypton:
 
-### 1.1 Python
-
-Install a compatible version of Python on each machine. Ensure Python and pip are available from a terminal.
-
-On Windows, the commands below use `python`. On Linux, use `python3` if required by your distribution.
-
-### 1.2 Server Dependencies
-
-Install the required Python packages:
-
-```shell
-python -m pip install cryptography argon2-cffi numpy pyzmq blake3 zxcvbn
+```bash
+python -m pip install cryptography argon2-cffi blake3 zxcvbn pyotp
 ```
 
-The server also requires these project modules:
+On Linux, use `python3` if that is the name of your Python interpreter. Keep the project modules `Encryption.py`, `network.py`, `server.py`, `client.py`, and `util.py` together unless you adjust their imports.
 
-- `Encryption.py`
-- `network.py`
-- `server.py`
-- `util.py`
+`network.py` imports a compiled extension named `backend`. `backend.cpp` is its source. The extension must be built for the same operating system, Python version, and CPU architecture as the interpreter. Build requirements include `pybind11`, a C++17-capable compiler, and Python development headers.
 
-Keep the files together in the server's installation directory unless you have adjusted the imports.
+### Mount dependencies
 
-### 1.3 Windows Client Dependencies
+The mount layer is platform-specific and is not fully contained in the files covered by this guide.
 
-Install the Python packages required by the client and its Windows mount integration:
+- **Windows:** `client.py` imports `winfuse3`. Install the dependencies required by that backend, including WinFsp where its current integration requires it. See [`winfuse3-README.md`](winfuse3-README.md).
+- **Linux:** `client.py` imports `vfs`. Install the Python FUSE binding and system FUSE packages required by the project's VFS integration. See [`vfs-README.md`](vfs-README.md).
 
-```shell
-python -m pip install watchdog pyzmq zxcvbn cryptography argon2-cffi blake3 numpy
+The `backend` networking extension is required even when you use the Python storage API without mounting a drive.
+
+## 2. Build the `backend` extension
+
+Install the build dependency:
+
+```bash
+python -m pip install pybind11 setuptools
 ```
 
-The Windows client imports the `winfuse3` mount backend, which integrates with the Windows Cloud Files API (cfAPI).
+On Linux, install a C++ compiler and the Python development headers using your distribution's package manager. From the directory containing `backend.cpp`, run:
 
-Install and configure the Windows filesystem dependencies required by that backend, including WinFsp where applicable. Make sure the matching `winfuse3` module is present and its required dependencies are installed.
-
-### 1.4 Linux Client Dependencies
-
-Install the Python packages:
-
-```shell
-python3 -m pip install fusepy pyzmq zxcvbn cryptography argon2-cffi blake3 numpy
+```bash
+c++ -O3 -Wall -shared -std=c++17 -fPIC -pthread \
+  $(python3 -m pybind11 --includes) backend.cpp \
+  -o "backend$(python3-config --extension-suffix)"
 ```
 
-The Linux client also requires the system FUSE library supported by the installed `fusepy` version.
+The output filename must begin with `backend` and end with the extension suffix reported by the same Python interpreter used to run Crypton. Confirm that the extension can be imported:
 
-Install the appropriate FUSE package for your Linux distribution and configure permissions as necessary. The exact system package depends on your distribution and FUSE version.
-
-The client requires these project modules:
-
-- `Encryption.py`
-- `network.py`
-- `client.py`
-- `util.py`
-- `vfs.py`
-
-### 1.5 Obtain the Project Files
-
-Download or clone the Crypton repository and place the required modules in the appropriate server or client directory.
-
-Keep the installation directory consistent when starting the application. Several default paths, including the client mount point and Linux cache locations, are relative to the current working directory.
-
----
-
-## 2. Server Setup
-
-The Crypton server provides remote filesystem access and manages client authentication through the networking module.
-
-### 2.1 Configure the Shared Directory
-
-The server's default shared directory is configured in `server.py`:
-
-```python
-SHARED_DIR = os.path.expanduser("~/Shared")
+```bash
+python -c "import backend; print(backend.__doc__)"
 ```
 
-The directory is created automatically if it does not exist.
+For Windows or other build environments, use the MSVC C++ build tools and `pybind11` with the same Python environment that will run Crypton. A cross-platform setuptools recipe and the extension's exported API are documented in [`backend-README.md`](backend-README.md).
 
-On Linux, this normally resolves to:
+## 3. Start the server
 
-```text
-/home/your-user/Shared
-```
+Run from the Crypton directory so that relative files such as `server_salt.bin` and `./keys` resolve consistently:
 
-On Windows, it resolves relative to the home directory of the account running the server.
-
-The current `FileServer` constructor does not accept a shared-directory parameter. To use another location, change `SHARED_DIR` in `server.py` before starting the server.
-
-**Important:** This is the directory containing the actual server-side files. The networking layer protects data in transit, but files stored here are not automatically encrypted at rest by the supplied `server.py` implementation. See [Section 8: Security Considerations](#8-security-considerations).
-
-### 2.2 Start the Server
-
-Open a terminal in the server installation directory and run:
-
-```shell
+```bash
 python server.py
 ```
 
-On Linux, use:
+The command-line launcher asks for the server password. It also asks briefly whether to set up a new administrator TOTP. On first startup, or when a new TOTP setup is requested, Crypton prints a Base32 administrator TOTP secret and clears the console after a short delay.
 
-```shell
-python3 server.py
-```
+1. Add that secret to a trusted authenticator app immediately.
+2. Keep the secret offline and private; it grants access to the administrator login flow.
+3. Confirm the printed listening address. The command-line launcher tries to discover a local interface address and falls back to `127.0.0.1` if discovery fails.
+4. Allow inbound TCP port `9000` only from intended clients through the host/network firewall.
 
-The server prompts for the master server password:
+The default server shared directory is `~/Shared`. It is created if needed. To choose another location, edit `SHARED_DIR` in `server.py`; the current `FileServer` constructor does not expose a shared-directory parameter.
 
-```text
-Server password:
-```
+The server also uses these relative paths by default:
 
-It may then prompt for the administrator authentication-key password:
+- `./server_salt.bin` — server password salt; keep it with the associated encrypted key material.
+- `./keys/` — server-side client identity keys.
+- `./ADMIN - TOTP.bin` — encrypted administrator TOTP secret.
+- `./BOOTSTRAP - TOTP.bin` — encrypted bootstrap TOTP secret when bootstrap enrollment has been configured.
 
-```text
-Auth key password:
-```
+Run the server from the same working directory on subsequent starts, or explicitly plan and manage these relative paths before relocating it.
 
-The server prints its listening address and shared directory when initialization succeeds. For example:
+## 4. Configure and enroll the first client
 
-```text
-[*] File Server active on tcp://192.0.2.10:9000 | Serving: /home/user/Shared
-```
+The current implementation uses TOTP-based bootstrap enrollment. It does **not** use the older administrator ZIP bootstrap archive described by outdated documentation.
 
-The IP address depends on the machine's network configuration. The example address above is illustrative.
+### 4.1 Configure bootstrap TOTP as an administrator
 
-The current command-line launcher attempts to discover a local network address and falls back to the loopback address if discovery fails. Verify the printed address before attempting to connect from another machine.
+1. Start `python client.py ./auth_key` on a machine that can reach the server.
+2. At `Authenticate as admin? [y/N]:`, enter `y`.
+3. Enter the server host/IP and the current administrator TOTP code from your authenticator app.
+4. In the admin console, use the bootstrap TOTP setup option to generate a new secret. Add the displayed secret to an authenticator app, then verify it with a current code when prompted.
+5. Enable bootstrap enrollment in the admin console.
+6. Communicate the bootstrap TOTP secret or enrollment code to the intended new client through a trusted channel.
 
-If the server binds to `127.0.0.1`, remote machines cannot connect through that loopback address. Adjust the host configuration if necessary.
+The administrator TOTP and bootstrap TOTP serve different purposes. Do not distribute the administrator secret to ordinary clients.
 
-### 2.3 Configure the Master Server Password
+### 4.2 Enroll a new client
 
-Use a strong, unique password when prompted for the master server password.
+On the client machine, ensure the intended identity path does not already contain a client identity file. Run:
 
-This password is used to derive the encryption key that protects server-side authentication key material at rest. It is distinct from the administrator authentication-key password.
-
-The server also creates or loads a salt file used during key derivation. The default location is:
-
-```text
-./server_salt.bin
-```
-
-Keep this file safe and available. Losing or replacing it can prevent the original at-rest encryption key from being derived.
-
-### 2.4 Configure the Administrator Authentication-Key Password
-
-The administrator authentication-key password controls the generation of the bootstrap archive used to enroll new clients.
-
-Use a separate, strong password.
-
-This prompt is optional at startup, but **client enrollment requires an administrator bootstrap archive**. If the password is omitted, times out, or fails the configured validation, the server may start without enabling new-client enrollment.
-
-The default bootstrap archive location is:
-
-```text
-./keys/auth_key
-```
-
-The archive is generated by the networking module when an acceptable administrator password is supplied.
-
-The archive password is distinct from:
-
-- The master server password.
-- A client's master key-storage password.
-- The password used by unrelated accounts or services.
-
-See [Section 4: Authorizing a Client](#4-authorizing-a-client) for the enrollment procedure.
-
-### 2.5 Server Key and Salt Storage
-
-By default, the networking module uses:
-
-```text
-./keys/
-./server_salt.bin
-```
-
-The key directory contains server-side authentication key material and the administrator bootstrap archive. The salt file supports server at-rest key derivation.
-
-These paths are relative to the server process's current working directory unless configured otherwise.
-
-Restrict access to this directory and the salt file. Back them up securely, and do not commit private keys, archives, salts, or credentials to version control.
-
-### 2.6 Keep the Server Running
-
-The server performs network communication in background I/O threads. When running from the command line, leave the server process running while clients access the storage.
-
-Press Ctrl+C to shut it down cleanly.
-
-If using the server programmatically, close the underlying networking server when the application exits:
-
-```python
-server.server.close()
-```
-
----
-
-## 3. Client Setup
-
-The client provides the interface to remote storage. It can mount the storage as a native filesystem or expose storage operations through its Python API.
-
-### 3.1 Platform-Specific Mounting
-
-**Windows**
-
-The Windows client uses the `winfuse3` mount backend and the Windows Cloud Files API (cfAPI). This supports the representation of remote files in the local filesystem and on-demand file hydration.
-
-Install the required Windows filesystem dependencies before launching the client.
-
-**Linux**
-
-The Linux client uses the `vfs` module and FUSE. The VFS provides chunk-based local caching, working files for edits, a synchronization journal, and recovery handling for failed commits.
-
-Install the required FUSE libraries and verify that the current user has suitable permissions.
-
-### 3.2 Start the Client
-
-Place the required client modules in the client installation directory and run:
-
-```shell
+```bash
 python client.py ./auth_key
 ```
 
-On Linux:
+Choose normal (non-admin) mode, enter the server address and a strong client password, then enter the current code from the bootstrap authenticator when asked for `Auth Key Security Code`. After successful enrollment, the client stores its encrypted identity material at the selected path. That file is no longer an empty/nonexistent path; keep it private and back it up securely.
 
-```shell
-python3 client.py ./auth_key
+If `./auth_key` already exists, the client attempts normal authentication with that identity file and the client password instead of starting first-time bootstrap.
+
+### 4.3 Disable bootstrap enrollment
+
+After the intended client or clients are enrolled, log back in through admin mode and disable bootstrap enrollment. Keep bootstrap disabled except during a planned enrollment window. Treat the bootstrap TOTP as a privileged onboarding credential.
+
+## 5. Start the client and mount storage
+
+Run the client in the same working directory as its identity file:
+
+```bash
+python client.py ./auth_key
 ```
 
-The authentication-key path is optional. If omitted, the client defaults to:
+The program prompts for normal/admin mode, server address, and (in normal mode) the client password. The mounted directory is `~/mount` on both Windows and Linux.
 
-```text
-./auth_key
-```
+- On Windows, the client starts the `winfuse3` integration and uses Windows Cloud Files API behavior for remote file hydration.
+- On Linux, the client starts the FUSE-based `vfs` integration. Its cache and synchronization behavior is covered in [`vfs-README.md`](vfs-README.md).
 
-The supplied file initially needs to be the administrator bootstrap archive distributed by the server administrator.
+On Linux, the default VFS metadata/cache files may be created under the client's current working directory, including `cache/`, `cache_meta.db`, and `sync_journal.db`. Preserve journal, working, and recovery files until you have verified that no local changes remain uncommitted. Keep the working directory consistent across launches.
 
-During startup, the client requests the host IP address and client password if these values were not obtained through the optional TPM integration.
-
-When the supplied authentication file is an administrator ZIP archive, the client also requests the archive password.
-
-The client uses the following credentials for different purposes:
-
-| Credential | Purpose |
-|---|---|
-| Master client password | Derives the at-rest encryption key used to protect the client's stored identity key. |
-| Administrator authentication-key password | Unlocks the administrator bootstrap archive during initial enrollment. |
-| Server address | Identifies the server to connect to. |
-
-Do not reuse the server password as the client password or the administrator archive password.
-
-### 3.3 Initial Mount Point
-
-The current client creates a directory named:
-
-```text
-./mount
-```
-
-This is the default mount point on both Windows and Linux. It is relative to the current working directory.
-
-The client creates the directory if it does not exist, then starts the platform-specific mount backend.
-
-If the mount fails, check the mount dependencies, filesystem permissions, and terminal output.
-
-### 3.4 Windows Client Behavior
-
-The Windows client uses cfAPI integration to make remote files available through the local filesystem.
-
-Depending on the file and the mount implementation, a file may appear locally before all of its contents have been downloaded. Accessing the file can trigger hydration and increase local disk usage.
-
-Avoid deleting files from the mounted directory merely to reclaim cached space. Deleting a file may delete the remote file itself rather than only its locally hydrated contents.
-
-Use the appropriate cache-management behavior supported by the mount integration.
-
-### 3.5 Linux Client Behavior
-
-The Linux client mounts remote storage through FUSE and the Crypton VFS implementation.
-
-The VFS uses local chunk caching and persistent SQLite databases to manage cached data and synchronization state.
-
-By default, the VFS uses these paths relative to the client's current working directory:
-
-```text
-./cache/
-./cache_meta.db
-./sync_journal.db
-```
-
-The cache directory can contain cached chunks, temporary working files, and recovery files. The databases track cached data and operations that may need to be retried or reconciled.
-
-**Important:** Keep the working directory consistent between client launches. If you launch the client from a different directory, the relative cache and journal paths may resolve somewhere else.
-
-Do not remove the journal, working files, or recovery files indiscriminately. They may contain information required to recover changes that have not yet been committed.
-
-### 3.6 Python API
-
-A mounted drive is not required for every client operation. The Python client exposes a `RemoteStorage` API for direct remote access.
-
-For example:
+## 6. Use the Python API without a mount
 
 ```python
-from client import RemoteStorage, auth_key_password_callback
+from client import RemoteStorage
 
 storage = RemoteStorage(
-    host="192.0.2.10",
+    host="192.0.2.10",  # Replace with your server address.
     port=9000,
     key_path="./auth_key",
-    password="Use-A-Strong-Unique-Client-Password!",
-    auth_key_password_callback=auth_key_password_callback,
+    password=None,      # Prompts for the client password.
 )
 
 print(storage.listdir("/"))
+storage.write_file_from_local("./example.pdf", "/example.pdf")
+with storage.open_read("/example.pdf") as remote_file:
+    data = remote_file.read(1024)
 ```
 
-Replace the example address and credentials with your actual configuration.
+The API uses `key_path` for the enrolled client identity. The optional `auth_key_code_callback` argument can supply the bootstrap TOTP code programmatically when first enrolling a new client.
 
-For additional API methods and usage examples, see `client-README.md`.
+## 7. Backups, revocation, and maintenance
 
----
+Back up these items securely:
 
-## 4. Authorizing a Client
+- `server_salt.bin`, the server key directory, and the encrypted TOTP state files.
+- Each client's identity file and its associated client password managed separately.
+- Files in the shared directory.
+- Linux cache journals, working files, or recovery files that may contain changes not yet committed to the server.
 
-Initial enrollment is a coordinated process between the server administrator and the client user.
+To revoke a client, use the administrator tools to deauthorize its stored identity. To stop a client that is currently connected, use the disconnect action as well. Deauthorization alone removes the persistent identity keys but should not be treated as immediate session termination.
 
-The administrator supplies a bootstrap archive protected by a separate password. During enrollment, the client and server execute the authentication handshake and provision a long-term client identity key.
+## 8. Security considerations
 
-### 4.1 Server Administrator: Prepare the Bootstrap Archive
+- Use strong, unique server and client passwords. The networking module checks password strength with `zxcvbn`.
+- Protect server identity files, salt files, TOTP secrets, client identity files, and backup copies with strict operating-system permissions.
+- The custom Crypton protocol encrypts application messages in transit, but it is not a drop-in replacement for TLS and has not been established as independently audited or formally verified.
+- Files saved by `server.py` in the shared directory are plaintext at rest unless the operating system or storage device provides encryption. The server can read file contents.
+- Local hydrated/cache files may contain plaintext. Do not delete from a mounted directory just to clear the cache; it may delete the remote file.
+- Do not expose the listening TCP port to untrusted networks before reviewing the protocol and deployment threat model.
 
-1. Start the server with a suitable administrator authentication-key password.
-2. Confirm that the server has initialized successfully and generated its bootstrap archive.
-3. Locate the archive:
+## 9. Optional Psudo-TPM integration
 
-   ```text
-   ./keys/auth_key
-   ```
+Crypton can optionally integrate with [Psudo-TPM](https://github.com/Daniel523-dev/Psudo-TPM) for saved connection details and password autofill. It is separate from Crypton and is not required for normal operation. The current integration relies on Windows DPAPI; do not treat it as a supported Linux credential store.
 
-4. Make a copy of the archive for the client.
-5. Transfer the archive to the client user through a trusted channel.
-6. Communicate the corresponding archive password through a separate, trusted channel.
-
-Do not send the archive and its password together through an untrusted channel.
-
-### 4.2 Client User: Install the Bootstrap Archive
-
-1. Obtain the archive and its password from the administrator.
-2. Place a copy of the archive in the client working directory.
-3. Name the copy `auth_key`, or supply a different path when launching the client.
-4. Ensure that the file is the current archive issued by the administrator.
-
-For example:
-
-```shell
-python client.py ./auth_key
-```
-
-On Linux:
-
-```shell
-python3 client.py ./auth_key
-```
-
-The client password and administrator archive password are entered separately.
-
-### 4.3 Complete Enrollment
-
-During bootstrapping, the client uses the administrator signing credentials in the archive to authenticate the enrollment exchange.
-
-If enrollment succeeds, the client receives its long-term identity key material and protects it using the client password.
-
-**Important:** The client overwrites the local `auth_key` file during successful provisioning. Its contents change from the administrator ZIP archive to the client's encrypted identity-key file.
-
-Use a client-specific copy of the bootstrap archive rather than treating the server's archive as a reusable client identity file.
-
-### 4.4 Bootstrap Archive Rotation
-
-The bootstrap archive has a short lifecycle.
-
-- The server generates an archive during startup when an acceptable administrator archive password is provided.
-- The server regenerates its administrator signing credentials and archive after a bootstrap attempt.
-- Restarting the server also replaces the archive.
-- A second client should not rely on an archive that has already been used in a bootstrap attempt.
-- If enrollment fails, obtain the current archive from the administrator before trying again.
-
-An archive may therefore become invalid before a client uses it if another enrollment attempt occurs or the server restarts.
-
-Coordinate enrollment so that clients receive the current archive and do not race to use the same one.
-
-The archive password can remain the same across rotations, but each newly generated archive contains new administrator signing credentials and a new salt.
-
-### 4.5 After Enrollment
-
-After successful enrollment, the client should retain its newly provisioned identity-key file at the configured authentication-key path.
-
-Subsequent connections use this identity file rather than repeating the administrator bootstrap procedure.
-
-Keep this file secure. It contains encrypted identity material, and its confidentiality depends on the at-rest password and the security of the client machine.
-
-Each client should maintain its own identity file. Do not distribute one client's provisioned identity file as the bootstrap archive for other clients.
-
----
-
-## 5. Storage Locations
-
-The following table lists the default locations used by the supplied implementation.
-
-| Component | Default Location | Purpose |
-|---|---|---|
-| Server shared files | `~/Shared` | Files stored on the server. |
-| Server authentication keys | `./keys/` | Server-side client key material and bootstrap archive. |
-| Server salt | `./server_salt.bin` | Salt for server at-rest key derivation. |
-| Client identity file | `./auth_key` | Client's encrypted identity key after enrollment. |
-| Client mount point | `./mount` | Native filesystem mount point on Windows or Linux. |
-| Linux chunk cache | `./cache/` | Cached chunks, working files, and recovery files. |
-| Linux cache metadata | `./cache_meta.db` | SQLite metadata for cached chunks. |
-| Linux synchronization journal | `./sync_journal.db` | Pending filesystem operations and file-hash state. |
-
-Paths beginning with `./` are relative to the process's current working directory.
-
-The server's shared directory is different: it is defined by `SHARED_DIR` in `server.py` and expanded relative to the home directory of the account running the server.
-
-### 5.1 Backups
-
-Back up important configuration and key material securely.
-
-In particular, protect:
-
-- The server's key directory.
-- The server salt file.
-- Client identity-key files.
-- Any data stored in the shared directory.
-- Linux cache recovery files that contain unsynchronized changes.
-
-Avoid copying temporary cache contents unnecessarily, but verify that no needed recovery data is lost before cleaning up a cache directory.
-
----
-
-## 6. Client Revocation
-
-Client authorization is managed by the networking layer.
-
-The server stores provisioned client identity key material in the configured authentication-key directory. These files are separate from the administrator bootstrap archive.
-
-To revoke a client, identify its server-side identity key files and remove the associated authorization material. Remove both members of the corresponding key pair when cleaning up the identity.
-
-**Important:** Removing authorization files prevents the client from successfully authenticating again, but it does not necessarily terminate an already-established connection immediately.
-
-Under the current behavior, the revocation becomes effective for a client when it disconnects and attempts to authenticate again, such as after a client restart. Do not treat file deletion as an immediate session-termination mechanism.
-
-Take care to identify the correct client identity before deleting key material. Removing the wrong files can revoke the wrong client.
-
-For additional information about the authentication implementation, see `network-README.md`.
-
----
-
-## 7. Optional Psudo-TPM Integration
-
-Psudo-TPM provides optional password autofill and connection-information storage.
-
-Repository:
-
-https://github.com/Daniel523-dev/Psudo-TPM
-
-This integration is not required for normal Crypton operation.
-
-### 7.1 Platform Support
-
-Psudo-TPM relies on Windows DPAPI and is intended for Windows. Do not rely on it as a supported Linux credential-storage integration.
-
-### 7.2 Install Psudo-TPM
-
-Download the following from the Psudo-TPM repository:
-
-- `TPM.exe` — the latest release.
-- `TPM_client.py` — the corresponding Python module.
-
-Place both files in the same directory as the server or client files where the integration will be used.
-
-Install the additional dependencies required by Psudo-TPM:
-
-```shell
-python -m pip install zstandard pywin32
-```
-
-Follow the Psudo-TPM project's own instructions if its current release specifies additional setup requirements.
-
-### 7.3 Start TPM.exe
-
-If the optional integration is enabled, start `TPM.exe` before launching the Crypton server or client.
-
-The TPM process must be available whenever the relevant server or client process needs to retrieve stored credentials.
-
-The current Crypton entry points attempt to import `TPM_client` and retrieve previously stored values when the module is available. If the TPM service cannot be reached, the program may fall back to interactive entry.
-
-The server and client integrations operate independently. Enabling TPM on one machine does not enable it on the other.
-
-### 7.4 Stored Values
-
-The current integration can store values such as:
-
-- The server password.
-- The client password.
-- The client host IP address.
-
-The administrator bootstrap archive password remains a separate credential used during initial enrollment.
-
-TPM autofill is optional and is not required for encrypted networking, client authorization, storage access, or filesystem mounting.
-
----
-
-## 8. Security Considerations
-
-### 8.1 Passwords and Key Storage
-
-Use strong, unique passwords for server key storage, client key storage, and administrator bootstrap access.
-
-Crypton's networking module derives at-rest encryption keys from passwords and salts. Protect those passwords and retain the corresponding salt files.
-
-Password strength estimation is implemented using `zxcvbn`. Passwords that do not meet the implementation's configured strength requirements may be rejected.
-
-### 8.2 Transport Encryption and Stored Files
-
-Crypton encrypts application payloads in transit and protects authentication key material at rest.
-
-However, the supplied server implementation decrypts network messages before processing filesystem commands and writing files into the shared directory.
-
-Consequently:
-
-- The server can access the plaintext contents of files it stores.
-- Files in `~/Shared` are not automatically encrypted at rest by the server application.
-- Linux cache chunks, working files, and recovery files may contain plaintext file contents.
-- Windows files that have been hydrated may occupy local disk space as accessible file content.
-
-For additional protection, use operating-system access controls and disk encryption on both server and client machines.
-
-Do not assume that network encryption alone protects files against someone who gains access to the server's filesystem or a running client.
-
-### 8.3 Secure Client Enrollment
-
-- Distribute bootstrap archives through a trusted, authenticated channel.
-- Send the administrator archive password separately.
-- Use only the current archive supplied by the administrator.
-- Coordinate enrollment to prevent multiple clients from racing to use one archive.
-- Treat client identity files as sensitive, even though their key material is encrypted.
-- Remove the correct server-side client authorization material when revoking access.
-
-### 8.4 Network Exposure
-
-Restrict access to the server to the networks and clients that require it.
-
-- Configure the host firewall appropriately.
-- Avoid exposing the server directly to untrusted networks without a security review.
-- Protect the key directory and salt file with restrictive filesystem permissions.
-- Monitor server logs and handle unexpected disconnects or authentication failures.
-- Test authentication, reconnection, and recovery behavior before relying on the system for sensitive data.
-
-### 8.5 File and Cache Management
-
-Do not delete files from a mounted directory just to reclaim local cache space. A delete operation may affect the remote file itself.
-
-On Linux, working files and recovery files can contain modifications that have not been committed to the backing store. Preserve them until you have confirmed that they are no longer needed.
-
----
-
-## 9. Performance and Scalability
-
-Crypton uses chunked transfers, background network I/O, caching, and transactional uploads to support large files and concurrent filesystem activity.
-
-The default transfer chunk size for the client is 12 MiB. The Linux VFS defaults to 16 MiB cache chunks, and its transactional upload path supports chunks up to the server's configured 64 MiB maximum.
-
-Actual throughput and client capacity depend on:
-
-- CPU performance and available memory.
-- Network bandwidth and latency.
-- Number of active clients.
-- File sizes and access patterns.
-- Cache hit rates and available disk space.
-- Server filesystem performance.
-- Concurrent reads, writes, uploads, and metadata operations.
-
-The networking implementation defines a 256 MiB payload-buffer accounting limit, but this is not a strict process-wide memory limit.
-
-There is no reliable universal client-count guarantee based solely on the protocol's exchange-ID or cryptographic identifier sizes. Determine practical capacity by benchmarking the actual deployment under realistic workloads.
-
----
+Follow Psudo-TPM's own release instructions for `TPM.exe`, `TPM_client.py`, and its dependencies. Start the TPM service on each machine where its local integration will be used. Client and server integrations operate independently.
 
 ## 10. Troubleshooting
 
-### 10.1 The Server Does Not Start
+**`ModuleNotFoundError: backend`** — Build `backend.cpp` for the active Python interpreter. Check the extension filename and that it is in the import path.
 
-- Verify that Python and the required dependencies are installed.
-- Ensure the server password meets the configured strength requirements.
-- Check that the port is available.
-- Confirm that the key directory and salt file can be created or accessed.
-- Inspect the terminal output for initialization errors.
+**`ModuleNotFoundError` for `pyotp`, `zxcvbn`, `cryptography`, `argon2`, or `blake3`** — Install runtime packages into the same interpreter environment used to launch Crypton.
 
-### 10.2 The Client Cannot Connect
+**Client cannot connect** — Confirm the server is running on TCP port `9000`, verify the address shown by the server, and check firewall/routing rules.
 
-- Verify that the server is running.
-- Confirm that the host IP address and port are correct.
-- Ensure the server's listening address is reachable from the client.
-- Check host firewall and network restrictions.
-- Verify that the client has valid authorization material.
+**Bootstrap fails** — Confirm bootstrap enrollment is enabled, that a bootstrap TOTP secret has been configured and verified, and that the code is current. Make sure the target identity path is absent for first enrollment.
 
-### 10.3 Authentication Fails
+**Normal authentication fails** — Check that the selected identity file and client password match. Confirm the client has not been deauthorized and the server salt/state files have not been replaced or restored inconsistently.
 
-- Confirm that the correct client identity file or current administrator archive was supplied.
-- Verify the corresponding password.
-- If enrolling a new client, obtain the current bootstrap archive from the administrator.
-- Check whether another client attempted enrollment or the server restarted after the archive was distributed.
-- If the client identity was revoked, contact the administrator for authorization.
-
-### 10.4 The Mount Fails
-
-**Windows**
-
-- Verify that the `winfuse3` module and required filesystem dependencies are installed.
-- Confirm that WinFsp and the Windows Cloud Files API integration are configured correctly.
-- Check that the intended mount point is accessible.
-
-**Linux**
-
-- Verify that `fusepy` and the compatible system FUSE library are installed.
-- Check FUSE permissions and mount-point ownership.
-- Inspect the terminal output for VFS or backing-store errors.
-
-### 10.5 Files Fail to Upload
-
-- Check the server connection and available disk space.
-- Verify that the destination directory exists.
-- Check for concurrent modifications and version-conflict errors.
-- Inspect the Linux VFS journal and recovery directory for uncommitted changes.
-- Retry only after determining whether a prior operation partially completed or left recoverable data.
-
-### 10.6 Cached Files Use Too Much Disk Space
-
-- Check the configured cache directory.
-- Allow the Linux cache manager to expire inactive chunks.
-- Check whether disk usage comes from cached chunks, working files, or recovery files.
-- Use the supported platform-specific cache-management procedures.
-- Do not blindly remove contents from the mount directory.
-
----
-
-## Setup Complete
-
-Setup is complete when:
-
-1. The server is running with its storage directory and key material configured.
-2. The client has received valid authorization credentials.
-3. The client has successfully completed initial enrollment.
-4. The client can connect to the server.
-5. The client can access remote storage through its configured mount point or Python API.
-
-Psudo-TPM is optional and is not required for Crypton's core networking, authentication, storage, or filesystem mounting functionality.
+**Mount fails** — Install the correct platform mount dependencies and check the terminal output. Review [`vfs-README.md`](vfs-README.md) or [`winfuse3-README.md`](winfuse3-README.md).

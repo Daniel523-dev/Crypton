@@ -1,283 +1,141 @@
-# Crypton — Cross-Platform Storage Client
+# Crypton Client
 
-The Crypton client is the client-side component of the Crypton self-hosted, end-to-end encrypted remote storage ecosystem. From the user's perspective, it provides a OneDrive-like experience while allowing remote files to be accessed through a native local drive on Windows or Linux.
+`client.py` is the user-facing client for the Crypton storage server. It supports a native mount on Windows and Linux, plus a Python API for direct remote file operations.
 
-Crypton supports Windows Cloud Files API (cfAPI) integration for transparent file hydration and FUSE-based filesystem mounting on Linux. It includes a Python API for direct remote storage operations, chunked file transfers, caching, and event callbacks. File data is encrypted and decrypted in memory as part of the Crypton security architecture.
-
-## Core Features
-
-- **Native Drive Integration:** Access remote files through your operating system's file manager. Open, create, edit, move, and delete files using familiar filesystem workflows.
-- **Cross-Platform Support:** Supports Windows and Linux clients, independently of the server's operating system.
-- **Windows Cloud Files API:** Uses the `winfuse3` mount backend to integrate remote files with Windows through cfAPI, including on-demand file hydration.
-- **Linux FUSE Mounting:** Uses the `vfs` mount backend to expose remote storage through a Linux filesystem interface, with chunked caching.
-- **Chunked File Transfers:** Transfers file data in chunks of up to 12 MiB, allowing large files to be processed without loading the entire file into memory at once.
-- **Upload Integrity and Conflict Detection:** The Linux VFS upload path supports transactional uploads, BLAKE3 hash verification, size verification, and optional expected-version checks to detect conflicting modifications.
-- **Asynchronous Upload Support:** The mount integration supports upload workflows designed to keep file operations responsive while data is transferred.
-- **Python Storage API:** Provides direct access to remote files and directories without requiring a mounted drive.
-- **Remote File Reader:** The `RemoteReader` class provides a file-like interface with `read()`, `seek()`, and `tell()` operations.
-- **Event Callbacks:** Use `storage.on(...)` to observe read, write, delete, and directory-creation operations.
-- **Memory-Based Encryption:** File data is handled through the project's encryption architecture, with encryption and decryption performed in memory.
+> **Data handling:** Network messages are encrypted in transit, but the server writes ordinary plaintext files in its shared directory. Windows-hydrated and Linux-cached files may also exist as local plaintext. Crypton should not be described as strict end-to-end encrypted storage in its current implementation.
 
 ## Requirements
 
-### Windows
+The client requires the common Crypton Python dependencies and the compiled `backend` extension. See [`SETUP.md`](SETUP.md) and [`backend-README.md`](backend-README.md).
 
-- Python and the dependencies required by Crypton.
-- The `winfuse3` module.
-- The underlying Windows filesystem driver and dependencies required by the mount backend, including WinFsp where applicable.
-- The Crypton client modules, including `network.py` and the required encryption modules.
+The mount implementation depends on the platform:
 
-### Linux
+- **Windows:** `winfuse3` and its filesystem dependencies. The client integrates with Windows Cloud Files API (cfAPI) for on-demand hydration.
+- **Linux:** the project's `vfs` module and compatible FUSE packages. The VFS adds local chunk caching and transactional upload behavior.
 
-- Python and the dependencies required by Crypton.
-- The `vfs` module.
-- The system-level FUSE libraries and packages required by the mount backend.
-- The Crypton client modules, including `network.py` and the required encryption modules.
-- The `blake3` Python package for the Linux client's file hashing functionality.
+The current entry point supports Windows and Linux; other operating systems raise a runtime error.
 
-Install and configure the platform-specific dependencies before running the client. Refer to the project's setup documentation for installation details.
+## Start the client
 
-## Usage
-
-### 1. Mount the Remote Drive
-
-Run `client.py` with the path to the client authentication key:
+Run the client from the directory where you want its identity file and relative application state to live:
 
 ```bash
-python client.py ./path/to/auth_key
+python client.py ./auth_key
 ```
 
-The authentication key path is optional. If omitted, the client defaults to `./auth_key`.
+The identity path is optional and defaults to `./auth_key`. At startup the client asks whether to authenticate as an administrator and then prompts for the server host/IP. Normal mode also requests a client password. During first-time enrollment, it requests an `Auth Key Security Code` from the bootstrap TOTP configured by an administrator.
 
-During startup, the client may prompt for:
+If the identity file does not exist, the client attempts bootstrap enrollment. If it already exists, it is treated as the encrypted identity file for normal authentication. Keep the identity file private and back it up securely.
 
-- **Host IP:** The IP address of the Crypton server.
-- **Client Password:** The password used to authenticate the client.
-- **Authentication Key Password:** The password needed to decrypt the protected authentication key.
+The mount point in the current source is `~/mount` on both platforms.
 
-If the optional TPM integration is configured, the client can attempt to retrieve the saved host address and client password.
+## First-time enrollment
 
-The client creates a local `./mount` directory if it does not exist and starts the platform-appropriate mount backend.
+First-time enrollment must be enabled by a server administrator. The administrator signs in using the administrator TOTP, configures and verifies a separate bootstrap TOTP, and enables bootstrap enrollment temporarily. The new client then uses a current bootstrap TOTP code to obtain and save its client identity. The administrator should disable bootstrap enrollment when enrollment is complete.
 
-Example startup output:
+Do not share the administrator TOTP secret with ordinary clients. For full instructions, see [the setup guide](SETUP.md#4-configure-and-enroll-the-first-client) and [`network-README.md`](network-README.md).
 
-```text
-Host IP [192.0.2.10]:
-Client password:
-Auth Key Password:
-[*] Starting WinFUSE at ./mount...
-```
+## Python API
 
-The displayed mount message depends on the operating system. On Linux, the client starts the FUSE mount instead.
-
-**Mount point:** The default is `./mount`, relative to the current working directory on both Windows and Linux. Ensure the location is appropriate for your operating system and configured mount backend.
-
-Once mounted, use the drive as you would a normal local filesystem. File access and hydration behavior depend on the platform's mount integration.
-
-### 2. Use the Python API
-
-The `RemoteStorage` class provides direct access to remote storage without requiring a mounted drive.
+The `RemoteStorage` class works without mounting a drive:
 
 ```python
-from client import RemoteStorage, auth_key_password_callback
+from client import RemoteStorage
 
-# Initialize the storage connection.
-# Omitting password prompts for the client password.
 storage = RemoteStorage(
-    host="192.0.2.10",
+    host="192.0.2.10",  # Replace with your server's address.
     port=9000,
     key_path="./auth_key",
-    auth_key_password_callback=auth_key_password_callback,
+    password=None,      # Prompts interactively.
 )
 
-# Upload a local file to remote storage.
-storage.write_file_from_local(
-    "./local_document.pdf",
-    "/remote_document.pdf",
-)
+print(storage.listdir("/"))
+storage.write_file_from_local("./local_document.pdf", "/remote_document.pdf")
 
-# Read a remote file into memory.
-data = storage.read("/remote_document.pdf")
-
-# Read a remote file through the file-like interface.
 with storage.open_read("/remote_document.pdf") as remote_file:
-    remote_file.seek(1024)  # Skip the first 1 KiB.
-    chunk = remote_file.read(512)  # Read the next 512 bytes.
+    remote_file.seek(1024)
+    sample = remote_file.read(512)
 
-# List directory contents.
-print("Files:", storage.listdir("/"))
-
-# Check whether a remote path exists.
-print(storage.exists("/remote_document.pdf"))
-
-# Query the remote file size.
 print(storage.get_size("/remote_document.pdf"))
 ```
 
-The example uses a documentation-only IP address; replace it with your server's actual address.
+The constructor is:
 
-The client password and the authentication-key password serve different purposes. The first authenticates the client to the server, while the second unlocks the protected authentication key when required.
+```python
+RemoteStorage(
+    host="127.0.0.1",
+    port=9000,
+    key_path="./auth_key",
+    password=None,
+    auth_key_code_callback=None,
+)
+```
 
-### 3. File Operations
+`auth_key_code_callback` is a callable used to obtain the bootstrap security code when enrolling a new client. It is not a password callback for an administrator ZIP archive; the current protocol no longer uses that archive flow.
 
-The storage API provides methods for common remote filesystem operations.
+## Common `RemoteStorage` methods
 
 | Method | Purpose |
 |---|---|
 | `read(path)` | Read a remote file into memory. |
-| `read_chunk(path, offset, length)` | Retrieve a portion of a remote file. |
-| `write_chunk(path, offset, data)` | Write a chunk of file data. |
-| `write_file_from_local(source, destination)` | Upload a local file in chunks. |
-| `open_read(path)` | Open a file-like remote reader. |
-| `listdir(path)` | List the contents of a directory. |
-| `exists(path)` | Check whether a remote path exists. |
-| `is_dir(path)` | Check whether a path is a directory. |
-| `get_size(path)` | Retrieve a remote file's size. |
-| `mkdir(path)` | Create a remote directory. |
-| `delete(path)` | Delete a remote path. |
-| `rename(source, destination)` | Rename or move a remote path. |
+| `read_chunk(path, offset, length=CHUNK_SIZE)` | Read a portion of a file. |
+| `write_chunk(path, offset, data)` | Write a data chunk at the requested offset. |
+| `write_file_from_local(source, destination)` | Upload a local file in chunks using the standard upload command. |
+| `open_read(path)` | Return a `RemoteReader` with `read`, `seek`, and `tell`. |
+| `listdir(path)` / `list_keys()` | List entries or recursively enumerate remote files. |
+| `exists(path)` / `is_dir(path)` | Query path existence or directory status. |
+| `get_size(path)` / `get_hash(path)` | Retrieve size or server-computed hash information. |
+| `mkdir(path)` / `make_directory(path)` | Create a remote directory. |
+| `delete(path)` | Delete a remote path. This operation affects the server-side file. |
+| `rename(source, destination)` / `move(source, destination)` | Move or rename a remote path. |
 | `copy(source, destination)` | Copy a remote path. |
 | `truncate(path, size)` | Change a remote file's length. |
-| `get_hash(path)` | Retrieve the server-provided file hash. |
-| `move(source, destination)` | Move a remote path, raising an error on failure. |
+| `on(event, callback)` | Register callbacks for `read`, `write`, `delete`, or `mkdir`. |
 
-Some operations have platform-specific implementations. The Linux mount backend uses additional VFS-specific operations for filesystem metadata, directory access, and transactional file uploads.
+Some behaviors differ between the generic API and the Linux mount integration. The Linux `LinuxRemoteStorage` mount adapter uses additional VFS commands for metadata, cache handling, and transactional uploads. Do not assume the generic `write_file_from_local` method has the same transaction semantics as a mounted Linux VFS write.
 
-### 4. RemoteReader
+The standard `info` response provides the file/directory and modification-time fields used by `RemoteStorage.is_dir()` and `RemoteStorage.stat()`, along with size and chunk information. The Linux VFS-specific metadata commands remain a separate interface with additional filesystem attributes.
 
-The `RemoteReader` class provides a file-like interface for reading remote data.
+## Mount behavior and caching
 
-```python
-with storage.open_read("/large_file.bin") as remote_file:
-    print("File size:", remote_file.size)
+### Windows
 
-    # Read the first 1 MiB.
-    first_chunk = remote_file.read(1024 * 1024)
+The Windows backend uses cfAPI to represent remote files in the local filesystem and hydrate contents when applications access them. Hydration may use local disk space. Deleting a mounted file may delete the remote file instead of only removing a local cached copy; use a supported cache-management procedure to reclaim space.
 
-    # Seek to a specific position.
-    remote_file.seek(4096)
+### Linux
 
-    # Read from the new position.
-    data = remote_file.read(1024)
+The Linux backend uses FUSE and the Crypton VFS. It uses chunk caching and a synchronization journal, and its mount upload workflow supports integrity checks and expected-version conflicts. The cache and journal paths are relative to the current working directory in the current implementation, so consistently launch the client from the intended directory. Preserve recovery files and journals until all writes are known to be committed.
 
-    # Inspect the current read position.
-    print("Position:", remote_file.tell())
-```
-
-The reader retrieves file contents in chunks rather than requiring a single request for the entire file. Its interface supports seeking from the beginning, current position, or end of the file.
-
-### 5. Event Callbacks
-
-Register callbacks to observe storage operations:
+## Event callbacks
 
 ```python
-storage.on(
-    "read",
-    lambda path: print(f"[READ] {path}"),
-)
-
-storage.on(
-    "write",
-    lambda path, data: print(
-        f"[WRITE] {path} ({len(data)} bytes)"
-    ),
-)
-
-storage.on(
-    "delete",
-    lambda path: print(f"[DELETE] {path}"),
-)
-
-storage.on(
-    "mkdir",
-    lambda path: print(f"[MKDIR] {path}"),
-)
+storage.on("read", lambda path: print("read", path))
+storage.on("write", lambda path, chunk: print("write", path, len(chunk)))
+storage.on("delete", lambda path: print("delete", path))
+storage.on("mkdir", lambda path: print("mkdir", path))
 ```
 
-Supported event names are `read`, `write`, `delete`, and `mkdir`. A write callback receives the path and the chunk of data being written. Read callbacks receive the path.
+Callbacks are useful for diagnostics and application-level logging. They are not a substitute for server authorization, auditing, or error handling.
 
-Callbacks can be useful for logging, diagnostics, and application-level monitoring. They should not be treated as a substitute for server-side authorization or security auditing.
+## Administration and revocation
 
-## Under the Hood
+Run `client.py` and select admin mode to access the administrator console. Administrative functions include listing users/connections, configuring bootstrap TOTP, enabling/disabling bootstrap enrollment, renaming a stored client, deauthorizing a client, and disconnecting a live connection.
 
-### Networking and Packet Framing
+Deauthorizing a client removes its persistent server-side identity key files. An already-connected session may continue until it is separately disconnected or ends; use the disconnect action when immediate termination is intended.
 
-The client communicates with the server through Crypton's custom networking implementation. The packet helpers `make_packet()` and `parse_packet()` encode and decode messages using a four-byte length prefix for JSON metadata followed by any binary payload.
+## Security notes
 
-The client delegates network communication and cryptographic processing to the project's networking and encryption modules.
-
-### Thread Safety
-
-The storage implementation uses a `threading.Lock` to serialize access to the network client's send/receive operations. This helps prevent concurrent requests from interfering with one another when multiple filesystem operations occur close together.
-
-### Chunked Transfers
-
-The shared `CHUNK_SIZE` is 12 MiB. Chunked processing allows large files to be transferred incrementally.
-
-For Linux VFS writes, the client supports a transactional upload process:
-
-1. Calculate the local file's size and BLAKE3 hash.
-2. Request an upload session from the server.
-3. Upload file chunks with their respective offsets.
-4. Commit the completed upload.
-5. Verify the server-reported hash and file size.
-6. Abort the upload when an unsuccessful operation leaves a transaction unfinished.
-
-The optional expected-version parameter enables conditional uploads. If the server reports a version conflict, the client can reject the write instead of silently overwriting a concurrent change.
-
-### Caching and Hydration
-
-On Windows, the cfAPI integration allows remote files to be represented in the local filesystem and hydrated when their contents are accessed. Hydrated data can occupy local disk space.
-
-On Linux, the FUSE integration provides filesystem access through the `vfs` backend, which supports chunked caching.
-
-Caching is an implementation detail of the mount backends. Do not assume that deleting a file from the mounted directory merely clears its cached content; it can instead delete the remote file. Use the appropriate platform-specific cache-management procedure.
-
-### Encryption and Data Handling
-
-Crypton uses its encryption and networking components to protect communications and file data. Authentication keys are protected with password-based encryption at rest.
-
-The exact confidentiality guarantees depend on the complete implementation, key handling, and runtime environment. Files that are hydrated or cached locally may exist as accessible local filesystem content while in use; end-to-end encryption does not by itself mean cached files remain encrypted on the client disk.
-
-## Client Access Revocation
-
-Client authorization is managed by the server. Deleting the authorization file associated with a client revokes its authorization for subsequent authentication.
-
-**Important:** Under the current behavior, deleting the file takes effect when the affected client restarts. It should not be treated as immediate termination of an existing session.
-
-## Optional TPM Autofill Integration
-
-Crypton can optionally integrate with the separate Psudo-TPM project to retrieve saved connection information and the client password.
-
-Repository:
-
-https://github.com/Daniel523-dev/Psudo-TPM
-
-This integration is not required for normal client operation. See the main project README and the Psudo-TPM documentation for setup instructions.
+- Use strong, unique client passwords and protect the client identity file.
+- The server can access plaintext contents of stored files. Encrypt the server's disk/volume if protection at rest is required.
+- Do not expose the service to untrusted networks without reviewing the custom protocol's threat model.
+- Avoid deleting contents of a mount to clear cache; it may be a real remote deletion.
 
 ## Troubleshooting
 
-**The client cannot connect to the server**
+**Cannot connect:** Check the host/IP, TCP port `9000`, server process, firewall, and client identity.
 
-- Verify the server's IP address and listening port.
-- Confirm that network access to the server is permitted.
-- Check that the client password and authentication key are correct.
-- Verify that the authentication key can be decrypted using its password.
+**Bootstrap rejected:** Confirm that bootstrap TOTP was configured and verified by an administrator, bootstrap mode is enabled, the code is current, and the identity path does not already exist.
 
-**The mount fails to start**
+**Normal login rejected:** Verify the identity file and client password and check whether the administrator deauthorized the client.
 
-- Confirm that the required Windows or Linux mount dependencies are installed.
-- Verify that the mount directory is suitable for the platform-specific backend.
-- Check the terminal output for mount errors and dependency issues.
-
-**A remote file cannot be read or written**
-
-- Confirm that the client has valid authorization.
-- Check the server logs and network connection.
-- On Linux, inspect any version-conflict or transactional upload errors before retrying a write.
-
-**Local disk usage increases**
-
-- Windows cfAPI hydration may store file content locally.
-- Linux caching may also use local disk space.
-- Use the supported cache-management process for the appropriate platform rather than deleting files blindly from the mounted directory.
+**Mount does not start:** Verify the relevant `winfuse3` or `vfs` dependencies and inspect the terminal output. See [`SETUP.md`](SETUP.md).

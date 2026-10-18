@@ -1,74 +1,66 @@
-# Crypton — Secure Encrypted Remote Storage
+# Crypton — Self-Hosted Remote Storage
 
-Crypton is a cross-platform, end-to-end encrypted, self-hosted file storage ecosystem that provides a OneDrive-like experience from the client's perspective while keeping infrastructure under your control. Run the server and clients on Windows or Linux in any combination, and mount remote storage as a native local drive.
+Crypton is a cross-platform, self-hosted file-storage project for Windows and Linux. It provides a native mount experience, a Python storage API, chunked transfers, and a custom TCP protocol that encrypts application messages in transit.
 
-Crypton supports asynchronous uploads, transparent file hydration through the Windows Cloud Files API (cfAPI), and FUSE-based Linux mounting with chunked caching. Files are encrypted and decrypted on the fly in memory, while authentication keys are protected with password-based encryption at rest. Crypton uses a custom authentication and networking protocol built on standard cryptographic primitives rather than SSH or conventional file-transfer protocols.
+> **Security scope:** Crypton is not end-to-end encrypted storage in the strict sense. The server decrypts requests and stores file contents in its shared directory as ordinary files. The supplied server does not encrypt those files at rest. Transport encryption and encrypted authentication material do not protect server-side plaintext from a server administrator or a compromised server.
 
-> [!IMPORTANT]
-> ### **Before exploring Crypton, read `network-README.md` and examine `network.py`!**
->
-> ### `network.py` contains the project's cryptographic foundation and potentially novel design work. **Skip these files, and you'll miss what makes Crypton truly interesting.**
+## Features
 
-## Setup and Installation
+- **Native filesystem access:** Windows integration through `winfuse3` and the Windows Cloud Files API; Linux integration through the FUSE-based `vfs` backend.
+- **Python API:** Read, upload, list, rename, copy, truncate, and delete remote files without mounting a drive.
+- **Chunked I/O:** Standard file transfers use 12 MiB chunks; the Linux VFS has a separate transactional upload flow.
+- **Encrypted network messages:** `network.py` uses X448-based key agreement and AES-GCM-protected messages through the native C++ TCP extension in `backend.cpp`.
+- **Credential protection:** Client identity material and server authorization keys are encrypted at rest using password-derived keys.
+- **Administrator tools:** An admin console supports user and connection management, client disconnection, and time-based one-time-password (TOTP) enrollment controls.
 
-For detailed instructions on setting up, installing, and configuring Crypton, refer to the `SETUP.md` file in the root directory of this repository. Follow the instructions in that document to prepare the environment and get the system running.
+## Quick start
 
-## Project Structure & Documentation
+Start with [`SETUP.md`](SETUP.md) for dependency installation, compiling the native backend, server startup, and first-client enrollment.
 
-Crypton is organized into several modular components. For detailed instructions on using, configuring, or developing each component, refer to its respective README file:
+At a high level:
 
-* **Server Component** (`server-README.md`): Instructions for running and configuring the remote storage server.
-* **Client Component** (`client-README.md`): Guide to the Python client API and mounting remote storage as a native local drive.
-* **Cryptography** (`Encryption-README.md`): Overview of the cryptographic components, including Argon2id, AES-GCM, X448, Ed448, and BLAKE3.
-* **Networking** (`network-README.md`): Explanation of the custom network packet framing, streaming protocol, and communication mechanisms.
-* **Linux Mount** (`vfs-README.md`): Details on the FUSE-based Linux filesystem integration and chunked caching.
-* **Windows Mount** (`winfuse-README.md`): Details on the Windows virtual drive integration using the Windows Cloud Files API (cfAPI) for features such as transparent file hydration.
+1. Install the Python dependencies and build the `backend` extension from `backend.cpp`.
+2. Start the server with `python server.py` and securely record the administrator TOTP secret shown during initial setup.
+3. Use the client admin console to configure and enable a bootstrap TOTP for first-time client enrollment.
+4. Start a client with `python client.py ./auth_key`, complete enrollment, and keep the resulting client identity file private.
+5. Disable bootstrap enrollment when you have finished adding clients.
 
-## Windows Client Cache Management
+The default server storage directory is `~/Shared`. The command-line client mounts remote storage at `~/mount`. Both paths are relative to the current user's home directory; see the component docs for platform-specific behavior.
 
-The Windows Crypton client uses the Windows Cloud Files API (cfAPI) to integrate remote files with the local filesystem. Files can appear in the mounted directory without their complete contents being stored locally. When files are accessed, Windows may hydrate them by downloading their contents, which can cause local disk usage to increase.
+## Documentation
 
-To reclaim disk space, use the cache-management procedures documented by the project, where available. Avoid deleting files directly from the mounted directory unless you are certain the operation is safe and intended: doing so may delete files or affect synchronization rather than simply remove cached data.
+| Document | Contents |
+|---|---|
+| [`SETUP.md`](SETUP.md) | Installation, native extension build, server/client startup, enrollment, backups, troubleshooting |
+| [`server-README.md`](server-README.md) | Server configuration, storage behavior, administration, upload protocol |
+| [`client-README.md`](client-README.md) | Client mount, Python storage API, caching, callbacks |
+| [`network-README.md`](network-README.md) | Authentication flow, protocol behavior, `TCPServer` and `TCPClient` APIs |
+| [`backend-README.md`](backend-README.md) | C++/pybind11 TCP extension, exported classes, build instructions and limits |
+| [`Encryption-README.md`](Encryption-README.md) | Encryption helpers, key derivation, hashing, key exchange, signatures, certificate helpers |
+| [`vfs-README.md`](vfs-README.md) | Linux FUSE mount and VFS cache/synchronization behavior |
+| [`winfuse3-README.md`](winfuse3-README.md) | Windows mount integration and Cloud Files API behavior |
 
-Before performing cache cleanup:
+## Architecture
 
-1. **Stop the Crypton client** to prevent files from being actively accessed or modified.
-2. **Identify the cached data** using the project's supported cache-management procedures.
-3. **Verify synchronization** to ensure local changes have been uploaded before removing any cached contents.
+- `server.py` implements the filesystem command handler and writes files under the configured shared directory.
+- `client.py` exposes `RemoteStorage` and platform-specific mount adapters.
+- `network.py` implements enrollment, TOTP-based administrator/bootstrap authentication, session-key setup, and encrypted message handling.
+- `Encryption.py` provides cryptographic helpers used by the networking code and may also be used independently.
+- `backend.cpp` builds the importable Python extension named `backend`; it implements the native TCP transport, framing, queues, callbacks, and connection lifecycle.
+- `util.py` is a project-local helper module required by the Python cryptography/networking code.
 
-**Note:** The correct cleanup procedure depends on how the file is represented and managed by cfAPI. Do not assume that deleting a file from the mounted directory is equivalent to dehydrat­ing it.
+The native extension is a runtime dependency: `network.py` imports `backend`. Mounting also needs the platform-specific integration and its dependencies. See [`backend-README.md`](backend-README.md), [`vfs-README.md`](vfs-README.md), and [`winfuse3-README.md`](winfuse3-README.md).
 
-## Client Access Revocation
+## Security and operational notes
 
-Crypton stores client authorization material in files on the server. Access for a client can be revoked by deleting its corresponding authorization file.
-
-**Important:** Revocation takes effect when the affected client restarts. Do not treat deleting the file as an immediate termination of an already established session.
-
-## Optional: TPM Autofill Integration
-
-Optional autofill functionality is provided by the separate Psudo-TPM repository:
-
-https://github.com/Daniel523-dev/Psudo-TPM
-
-This component is not included in Crypton and must be obtained separately.
-
-To enable autofill, download `TPM.exe` from the latest release in the Psudo-TPM repository and obtain `TPM_client.py`. Place both files in the current working directory on each machine where the integration will be used.
-
-### Starting the TPM Program
-
-* **Server:** The server administrator must manually start `TPM.exe` on the server machine to enable server-side TPM autofill functionality.
-* **Client:** Each user must manually start `TPM.exe` on their own computer to enable client-side TPM autofill functionality.
-
-### Independent Operation
-
-The server and client TPM integrations operate independently. Whether the server runs Psudo-TPM does not affect the client's ability to use its own integration, and whether the client runs Psudo-TPM does not affect the server's integration.
-
-Each side can enable or disable its TPM functionality independently.
-
-The TPM integration is entirely optional and is not required for Crypton's core encrypted storage, network communication, authentication, or drive-mounting functionality.
+- Network messages are encrypted and authenticated by the Crypton protocol, but the custom protocol has not been shown here to have an independent security audit or formal verification.
+- The live networking path uses the custom TCP protocol; the certificate helper in `Encryption.py` does not make the transport TLS.
+- Server-side files in `~/Shared` are plaintext at rest unless the host provides disk/file encryption. Linux cache, working, and recovery files can also contain plaintext; Windows-hydrated files may consume local disk space.
+- Use strong, unique passwords and protect `server_salt.bin`, the server key directory, TOTP state files, and client identity files. Back these up securely.
+- Removing a client's server-side identity keys prevents future authentications. It does not necessarily terminate an already-authenticated session; use the admin console's disconnect action when immediate disconnection is required.
+- Do not delete files from a mounted directory just to reclaim local cache space. A delete may affect the remote file itself. Use the supported cache-management procedure for the relevant mount backend.
+- Optional autofill integration is provided by the separate [Psudo-TPM project](https://github.com/Daniel523-dev/Psudo-TPM). It is not required for core Crypton operation.
 
 ## License
 
-Crypton is released under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-See the `LICENSE` file for the full license text and information about your rights and obligations when using or modifying this software.
+Crypton is released under the GNU General Public License v3.0 (GPL-3.0). See [`LICENSE`](LICENSE) for the full terms.
