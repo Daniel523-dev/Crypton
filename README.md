@@ -14,6 +14,9 @@ Crypton is a cross-platform, self-hosted file-storage project for Windows and Li
 - **Administrator tools:** An admin console supports user and connection management, client disconnection, and time-based one-time-password (TOTP) enrollment controls.
 
 ## Quick start
+> [!IMPORTANT]
+> **Before exploring Crypton, read `network-README.md` and examine `network.py` and `backend.cpp`!**
+> ### **Before exploring Crypton, read `network-README.md` and examine `network.py`!**
 
 Start with [`SETUP.md`](SETUP.md) for dependency installation, compiling the native backend, server startup, and first-client enrollment.
 
