@@ -118,7 +118,7 @@ python client.py ./auth_key
 
 The program prompts for normal/admin mode, server address, and (in normal mode) the client password. The mounted directory is `~/mount` on both Windows and Linux.
 
-- On Windows, the client starts the `winfuse3` integration and uses Windows Cloud Files API behavior for remote file hydration.
+- On Windows, the client starts the `winfuse3` integration and uses Windows Cloud Files API behavior for remote file hydration and is covered in [`winfuse-README.md`](winfuse-README.md).
 - On Linux, the client starts the FUSE-based `vfs` integration. Its cache and synchronization behavior is covered in [`vfs-README.md`](vfs-README.md).
 
 On Linux, the default VFS metadata/cache files may be created under the client's current working directory, including `cache/`, `cache_meta.db`, and `sync_journal.db`. Preserve journal, working, and recovery files until you have verified that no local changes remain uncommitted. Keep the working directory consistent across launches.
