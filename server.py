@@ -255,7 +255,7 @@ class FileServer:
                     is_file = os.path.isfile(target)
                     size = os.path.getsize(target) if is_file else 0
                     total_chunks = ((size + CHUNK_SIZE - 1) // CHUNK_SIZE if is_file else 0)
-                    resp = make_packet({"status": "ok","path": rel_path,"is_file": is_file,"size": size,"chunk_size": CHUNK_SIZE,"total_chunks": total_chunks,})
+                    resp = make_packet({"status": "ok","path": rel_path,"is_file": is_file,"is_dir":not is_file,"size": size,"chunk_size": CHUNK_SIZE,"total_chunks": total_chunks,})
                 server_inst.send(resp,eid=eid,client_id=cid,)
             elif cmd == "download_chunk":
                 rel_path = meta.get("path", "")
