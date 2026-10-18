@@ -25,14 +25,14 @@ except ImportError:
         h=(hashlib.sha3_256(d).digest() if l<=32 else hashlib.sha3_512(d).digest() if l<=64 else hashlib.shake_256(d).digest(l))[:l]
         return util.to_hex(h) if hex else h
     def basic_kdf(master_pw:bytes, salt:bytes, length:int = 32) -> bytes:return HKDF(algorithm=hashes.SHA512(),length=length,salt=salt,info=b"kdf").derive(master_pw)
-KDF_LEVELS={0:[2,32768,4],1:[3,81920,4],2:[4,131072,3],3:[5,180224,3],4:[6,229376,3],5:[8,278528,2],6:[9,327680,2],7:[10,376832,2],8:[11,425984,2],9:[12,475136,1],10:[13,524288,1]}
+KDF_LEVELS={0:[2,32768],1:[3,81920],2:[4,131072],3:[5,180224],4:[6,229376],5:[8,278528],6:[9,327680],7:[10,376832],8:[11,425984],9:[12,475136],10:[13,524288]}
 def kdf_level(LEVEL):
     if LEVEL in KDF_LEVELS:return KDF_LEVELS[LEVEL]
     if not isinstance(LEVEL,int) or isinstance(LEVEL,bool) or LEVEL < 0:raise ValueError("LEVEL must be a non-negative integer")
-    return LEVEL + 2 + (1 if LEVEL >= 5 else 0), 32768 + LEVEL * 49152, max(1, 4 - ((LEVEL + 2) // 4))
+    return LEVEL + 2 + (1 if LEVEL >= 5 else 0), 32768 + LEVEL * 49152
 def kdf_fast(master_pw:bytes, salt:bytes) -> bytes:return kdf(master_pw,salt,0)
 def kdf_slow(master_pw:bytes, salt:bytes) -> bytes:return kdf(master_pw,salt,10)
-def kdf(master_pw,salt,level=5):lvl=kdf_level(level);return hash_secret_raw(secret=master_pw, salt=salt, time_cost=lvl[0], memory_cost=lvl[1], parallelism=lvl[2], hash_len=512, type=Type.ID)
+def kdf(master_pw,salt,level=5):lvl=kdf_level(level);return hash_secret_raw(secret=master_pw, salt=salt, time_cost=lvl[0], memory_cost=lvl[1], parallelism=1, hash_len=512, type=Type.ID)
 def encrypt(data:bytes, key:bytes) -> bytes:
     salt, iv = os.urandom(32), os.urandom(16)
     cipher = Cipher(AES(basic_kdf(key, salt)), modes.CTR(iv)).encryptor()

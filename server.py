@@ -125,7 +125,7 @@ def safe_path(base_dir, req_path):
     base = os.path.realpath(base_dir)
     target = os.path.realpath(os.path.join(base, str(req_path).lstrip("/\\")))
     try:
-        if os.path.commonpath((base, target)) != base:raise PermissionError("Access denied: path outside shared directory")
+        if os.path.commonpath((base, target)) != base or base==target:raise PermissionError("Access denied: path outside shared directory")
     except ValueError:raise PermissionError("Access denied: path outside shared directory")
     return target
 def make_packet(meta: dict, payload: bytes = b"") -> bytes:
@@ -166,6 +166,7 @@ class FileServer:
         self._vfs_mutation_lock = threading.RLock()
         self._vfs_upload_lock = threading.RLock()
         self._vfs_uploads = {}
+        self.auth_key_dir = kwargs.get("auth_key_dir", "./keys")
         os.makedirs(self.shared_dir, exist_ok=True)
         try:self.server = network.TCPServer(host=host,port=port,password=password,on_exchange=self.handle_exchange,**kwargs)
         except Exception as e:traceback.print_exception(e);raise OSError
@@ -197,6 +198,41 @@ class FileServer:
             payload = data[4 + header_len:]
             cmd = meta.get("cmd")
             if isinstance(cmd, str) and cmd.startswith("vfs_"):self._expire_vfs_uploads()
+            if isinstance(cmd, str) and cmd.startswith("admin_"):
+                if cmd == "admin_list_connections":
+                    server_inst.list_connections(cid, eid)
+                    return
+                elif cmd == "admin_list_users":
+                    server_inst.list_users(cid, eid)
+                    return
+                elif cmd == "admin_bootstrap_status":
+                    server_inst.bootstrap_status(cid, eid)
+                    return
+                elif cmd == "admin_enable_bootstrap":
+                    server_inst.enable_bootstrap(cid, eid)
+                    return
+                elif cmd == "admin_disable_bootstrap":
+                    server_inst.disable_bootstrap(cid, eid)
+                    return
+                elif cmd == "admin_setup_bootstrap_totp":
+                    server_inst.setup_bootstrap_totp(cid, eid)
+                    return
+                elif cmd == "admin_verify_bootstrap_totp":
+                    server_inst.verify_bootstrap_totp(cid, eid, meta.get("code", ""))
+                    return
+                elif cmd == "admin_rename_username":
+                    server_inst.rename_username(cid, eid,meta.get("target_cid", ""),meta.get("new_username"))
+                    return
+                elif cmd == "admin_deauth_client":
+                    server_inst.deauth_client(cid, eid, meta.get("target_cid", ""))
+                    return
+                elif cmd == "admin_disconnect_client":
+                    server_inst.disconnect_client(cid, eid, meta.get("target_cid", ""))
+                    return
+                else:
+                    result = {"status": "error","message": f"Unknown admin command: {cmd}"}
+                    server_inst.send(make_packet(result), eid=eid, client_id=cid)
+                    return
             if cmd == "list":
                 rel_path = meta.get("path", "")
                 target = safe_path(self.shared_dir, rel_path)
@@ -285,7 +321,7 @@ class FileServer:
                     resp = make_packet({"status": "ok",})
                 server_inst.send(resp,eid=eid,client_id=cid,)
             elif cmd == "delete":
-                target = safe_path(self.shared_dir,meta.get("path", ""),)
+                target = safe_path(self.shared_dir,meta.get("path"))
                 if not os.path.exists(target):resp = make_packet({"status": "error","message": "Path does not exist",})
                 else:
                     if os.path.isdir(target):shutil.rmtree(target)
@@ -527,11 +563,9 @@ if __name__ == "__main__":
         retrys-=1
         retry=False
         if password == None:password = getpass.getpass("Server password: ")
-        enable_bootstrap = get_optional_input("Enable bootstrapping? [y/N]: ",5).lower().startswith('y')
         newTOTP = get_optional_input("Setup TOTP? [y/N]: ",5).lower().startswith('y')
         if not isinstance(password,str):raise TypeError('password must be a string')
-        try:
-            srv = FileServer(IP,password=password,newTOTP=newTOTP,enable_bootstrap=enable_bootstrap)
+        try:srv = FileServer(IP,password=password,newTOTP=newTOTP)
         except OSError:
             retry=True
             password=None

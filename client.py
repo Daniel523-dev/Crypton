@@ -12,119 +12,6 @@ elif sys.platform.startswith("linux"):
     import tty
     PLATFORM = "linux"
 else:raise RuntimeError(f"Unsupported platform:{sys.platform}")
-def get_optional_input(text, timeout=15):
-    if not sys.stdin.isatty() or not sys.stdout.isatty():return ""
-    value = []
-    cursor = 0
-    start = time.monotonic()
-    print(text, end="", flush=True)
-    def redraw():
-        print("\r" + text + "".join(value) + "\x1b[K", end="", flush=True)
-        print(f"\r{text}{''.join(value[:cursor])}", end="", flush=True)
-    def insert(char):
-        nonlocal cursor
-        value.insert(cursor, char)
-        cursor += 1
-        redraw()
-    def backspace():
-        nonlocal cursor
-        if cursor > 0:
-            cursor -= 1
-            value.pop(cursor)
-            redraw()
-    def delete():
-        if cursor < len(value):
-            value.pop(cursor)
-            redraw()
-    def move_left():
-        nonlocal cursor
-        if cursor > 0:
-            cursor -= 1
-            redraw()
-    def move_right():
-        nonlocal cursor
-        if cursor < len(value):
-            cursor += 1
-            redraw()
-    def move_home():
-        nonlocal cursor
-        cursor = 0
-        redraw()
-    def move_end():
-        nonlocal cursor
-        cursor = len(value)
-        redraw()
-    if os.name == "nt":
-        import msvcrt
-        while time.monotonic() - start < timeout:
-            if not msvcrt.kbhit():
-                time.sleep(0.01)
-                continue
-            char = msvcrt.getwch()
-            if char in ("\r", "\n"):
-                print()
-                return "".join(value) or ""
-            if char == "\x03":raise KeyboardInterrupt
-            if char in ("\x00", "\xe0"):
-                key = msvcrt.getwch()
-                if key == "K":move_left()
-                elif key == "M":move_right()
-                elif key == "G":move_home()
-                elif key == "O":move_end()
-                elif key == "S":delete()
-                continue
-            if char == "\b":backspace()
-            elif char == "\x1b":continue
-            else:insert(char)
-        print()
-        return ""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        while time.monotonic() - start < timeout:
-            remaining = timeout - (time.monotonic() - start)
-            ready, _, _ = select.select([fd], [], [], remaining)
-            if not ready:
-                print()
-                return ""
-            char = os.read(fd, 1)
-            if char in (b"\r", b"\n"):
-                print()
-                return "".join(value) or None
-            if char == b"\x03":raise KeyboardInterrupt
-            if char in (b"\x7f", b"\x08"):
-                backspace()
-                continue
-            if char == b"\x1b":
-                ready, _, _ = select.select([fd], [], [], 0.03)
-                if not ready:continue
-                seq = os.read(fd, 1)
-                if seq == b"[":
-                    ready, _, _ = select.select([fd], [], [], 0.03)
-                    if not ready:continue
-                    key = os.read(fd, 1)
-                    if key == b"D":move_left()
-                    elif key == b"C":move_right()
-                    elif key == b"H":move_home()
-                    elif key == b"F":move_end()
-                    elif key == b"3":
-                        ready, _, _ = select.select([fd], [], [], 0.03)
-                        if ready and os.read(fd, 1) == b"~":delete()
-                continue
-            if char[0] < 128:insert(char.decode())
-            else:
-                expected = (2 if char[0] & 0xE0 == 0xC0 else 3 if char[0] & 0xF0 == 0xE0 else 4 if char[0] & 0xF8 == 0xF0 else 1)
-                raw = char
-                for _ in range(expected - 1):
-                    ready, _, _ = select.select([fd], [], [], 0.05)
-                    if not ready:break
-                    raw += os.read(fd, 1)
-                decoded = raw.decode("utf-8", errors="replace")
-                for c in decoded:insert(c)
-        print()
-        return ""
-    finally:termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 def make_packet(meta, payload=b""):
     h = json.dumps(meta, separators=(",", ":")).encode()
     return len(h).to_bytes(4, "big") + h + payload
@@ -373,12 +260,161 @@ class LinuxRemoteStorage(RemoteStorage):
                 try:self._vfs_request({"cmd":"vfs_abort_upload","upload_id":upload_id,}, timeout=15)
                 except Exception:pass
     def write_file_from_local(self, source_path, relative_path):
-        if not self._transactional_write(source_path, relative_path):
-            raise BlockingIOError(errno.EBUSY,"Backing file changed while uploading",relative_path,)
+        if not self._transactional_write(source_path, relative_path):raise BlockingIOError(errno.EBUSY,"Backing file changed while uploading",relative_path,)
     def write_file_from_local_if_unchanged(self, source_path, relative_path, expected_version):return self._transactional_write(source_path, relative_path, expected_version=expected_version)
+def admin_request(client, cmd, **fields):
+    eid = os.urandom(8)
+    client.send(make_packet({"cmd": cmd, **fields}), eid=eid)
+    response = client.recv(eid, timeout=30)
+    if not response:raise TimeoutError(f"No response to {cmd}")
+    meta, payload = parse_packet(response)
+    if payload:meta["payload"] = payload
+    if meta.get("status") == "error":raise RuntimeError(meta.get("message", "Admin command failed"))
+    return meta
+def admin_console(client):
+    def ask(prompt):return input(prompt).strip()
+    def clear_screen():os.system("cls" if os.name == "nt" else "clear")
+    def show_connections():
+        result = admin_request(client, "admin_list_connections")
+        connections = result.get("connections", [])
+        print("\nConnected clients")
+        print("-" * 76)
+        print(f"{'Row':>3}  {'Username':<24} {'Client ID'}")
+        if not connections:print("No authenticated named clients are connected.")
+        else:
+            for i, item in enumerate(connections, 1):
+                username = item.get("username", "?")
+                if len(username) > 24:username = username[:10] + "..." + username[-8:]
+                print(f"{i:>3}  {username:<24} {item.get('cid','?')}")
+        print("-" * 76)
+        return connections
+    def show_users():
+        result = admin_request(client, "admin_list_users")
+        if isinstance(result, list):users = result
+        elif isinstance(result, dict):users = result.get("users", result.get("names", []))
+        else:users = []
+        users = sorted(set(users), key=str.lower)
+        print("\nStored users")
+        print("-" * 50)
+        if not users:print("No stored users found.")
+        else:
+            for i, username in enumerate(users, 1):print(f"{i:>3}  {username}")
+        print("-" * 50)
+        return users
+    def select_row(connections):
+        if not connections:return None
+        raw = ask("Select client row number (blank to cancel): ")
+        if not raw:return None
+        try:index = int(raw) - 1
+        except ValueError:
+            print("Enter the row number shown in the list.")
+            return None
+        if index < 0 or index >= len(connections):
+            print("That row is not in the current list.")
+            return None
+        return connections[index]
+    def pause_and_clear():
+        try:input("\nPress Enter to clear the screen and continue...")
+        except (KeyboardInterrupt, EOFError):pass
+        clear_screen()
+    while True:
+        clear_screen()
+        print("=" * 42)
+        print("             FILE SERVER ADMIN")
+        print("=" * 42)
+        print(" 1. List connected clients")
+        print(" 2. List all clients")
+        print(" 3. Rename a client's username")
+        print(" 4. Revoke a client's authentication key")
+        print(" 5. Disconnect a client")
+        print(" 6. Show bootstrap status")
+        print(" 7. Enable bootstrapping")
+        print(" 8. Disable bootstrapping")
+        print(" 9. Set up / reset bootstrap TOTP")
+        print(" 0. Exit admin console")
+        choice = ask("\nChoose an option [1-10]: ")
+        if choice in ("0","10"):return
+        try:
+            if choice == "1":show_connections()
+            elif choice == "2":show_users()
+            elif choice == "3":
+                users = show_users()
+                selected = select_row(users)
+                if selected is None:print("No user selected; no changes made.")
+                else:
+                    old_name = selected
+                    new_name = ask(f"New username for {old_name}: ")
+                    if not new_name:print("Rename cancelled.")
+                    else:
+                        result = admin_request(client,"admin_rename_username",target_cid=old_name,new_username=new_name)
+                        print(f"Username updated to {result.get('username', new_name)}.")
+                        if result.get("renamed_files"):print("Authentication key files renamed on the server.")
+                        print("\nUpdated user list:")
+                        show_users()
+            elif choice in ("4", "5"):
+                connections = show_connections()
+                selected = select_row(connections)
+                if selected is None:print("No client selected; no changes made.")
+                else:
+                    target = selected.get("cid")
+                    username = selected.get("username", "?")
+                    if choice == "4":
+                        print("This revokes future authentication; it does not disconnect the active session.")
+                        if ask(f"Revoke {username}'s key? Type YES to confirm: ") == "YES":
+                            admin_request(client,"admin_deauth_client",target_cid=target)
+                            print("Authentication key revoked.")
+                        else:print("Revocation cancelled.")
+                    else:
+                        if ask(f"Disconnect {username}? Type YES to confirm: ") == "YES":
+                            admin_request(client,"admin_disconnect_client",target_cid=target)
+                            print("Disconnect requested.")
+                            print("\nUpdated client list:")
+                            show_connections()
+                        else:print("Disconnect cancelled.")
+            elif choice == "6":
+                result = admin_request(client, "admin_bootstrap_status")
+                print("Bootstrapping:", "ENABLED" if result.get("enabled") else "disabled")
+                print("Bootstrap TOTP:", "configured" if result.get("totp_configured") else "not configured")
+            elif choice == "7":
+                result = admin_request(client, "admin_enable_bootstrap")
+                print("Bootstrapping enabled." if result.get("enabled") else "Bootstrapping remains disabled.")
+            elif choice == "8":
+                admin_request(client, "admin_disable_bootstrap")
+                print("Bootstrapping disabled.")
+            elif choice == "9":
+                if ask("Generate a new bootstrap TOTP secret? Type YES to confirm: ") != "YES":print("TOTP setup cancelled.")
+                else:
+                    result = admin_request(client, "admin_setup_bootstrap_totp")
+                    secret = result.get("secret")
+                    if not secret:print("Server did not return a TOTP secret.")
+                    else:
+                        print("\nAdd this Base32 secret to your authenticator app:")
+                        print(secret)
+                        print("The new secret is pending and will not replace the active one until verified.")
+                        while True:
+                            code = ask("Enter the 6-digit code from your authenticator app (blank to cancel): ")
+                            if not code:
+                                print("Verification cancelled. The pending secret was not activated.")
+                                break
+                            try:
+                                verified = admin_request(client, "admin_verify_bootstrap_totp", code=code)
+                                if verified.get("verified"):
+                                    print("Bootstrap TOTP code verified and secret saved.")
+                                    break
+                                print("Code was not verified. Try again.")
+                            except Exception as exc:
+                                print(f"Verification failed: {exc}")
+                                if "No pending" in str(exc):break
+            else:print("Please choose a number from 1 to 9.")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        except Exception as exc:print(f"Admin command failed: {exc}")
+        pause_and_clear()
 def auth_key_code_callback():return input('Auth Key Security Code: ')
 if __name__ == "__main__":
     key_path = sys.argv[1] if len(sys.argv) > 1 else "./auth_key"
+    admin_mode = input("Authenticate as admin? [y/N]: ").strip().lower().startswith("y")
     TPM=False
     try:import TPM_client;TPM=True
     except:pass
@@ -387,14 +423,22 @@ if __name__ == "__main__":
     if TPM:
         try:
             c=TPM_client.TPMClient()
-            password=c.get_bytes('SFTP client password')['value'].decode("ascii")
+            if not admin_mode:password=c.get_bytes('SFTP client password')['value'].decode("ascii")
         except ConnectionError:print('Failed to connect to TPM server. Is TPM.exe running?')
         except:pass
     if TPM:
         try:ip = c.get_bytes("SFTP client host IP")["value"].decode("ascii")
         except:ip = ""
-    ip = get_optional_input(f"Host IP [{ip}]:").strip() or ip
+    ip = input(f"Host IP [{ip}]:").strip() or ip
     if not ip:raise RuntimeError("Host IP required")
+    if admin_mode:
+        password = ""
+        admin_code = getpass.getpass("Admin TOTP code: ").strip()
+        import network
+        admin_client = network.TCPClient(host=ip, port=9000, password="",auth_key=key_path, admin_auth_code=admin_code)
+        try:admin_console(admin_client)
+        finally:admin_client.close()
+        raise SystemExit(0)
     retry=True
     retrys=10
     while retry and retrys>0:
@@ -403,7 +447,6 @@ if __name__ == "__main__":
         if password==None:password = getpass.getpass("Client password:")
         storage_class = RemoteStorage if PLATFORM == "windows" else LinuxRemoteStorage
         storage = storage_class(host=ip,key_path=key_path,password=password,auth_key_code_callback=auth_key_code_callback)
-        # except OSError:password=None;retry=True
     if retrys==0 and retry:raise RuntimeError('Setup Error')
     if TPM:
         try:c.create_bytes('SFTP client password',password.encode('ascii'))

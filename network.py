@@ -1,4 +1,4 @@
-import os, hmac, zipfile, threading, traceback, base64, io, pyotp, backend, Encryption, util, subprocess, time
+import os, hmac, json, threading, traceback, base64, re, pyotp, backend, Encryption, util, subprocess, time
 from zxcvbn import zxcvbn
 try:Encryption.decryptGCM(b"X" * 100, b"X" * 100)
 except Exception as e:DecryptionError = type(e)
@@ -49,156 +49,283 @@ def validate_auth_keys(directory, at_rest_key):
             if os.path.exists(path):os.remove(path)
     return pairs
 class TCPServer:
-    def __init__(self, host, port, password, newTOTP=False, enable_bootstrap=False, auth_key_dir="./keys", on_exchange=None, simult_handshakes=4, simult_exchanges=4):
+    def __init__(self, host, port, password, newTOTP=False, auth_key_dir="./keys", on_exchange=None, simult_handshakes=4, simult_exchanges=4):
         self.auth_key_dir = auth_key_dir
         self.on_exchange = on_exchange
         self.newTOTP = newTOTP
         self.last_bootstrap=0
-        self.enable_bootstrap = enable_bootstrap
-        self.admin_ed = None
+        self._enable_bootstrap = False
         self.at_rest_key = _derive_at_rest_key(password, "./server_salt.bin")
         validate_auth_keys(self.auth_key_dir, self.at_rest_key)
-        totp_path = "./TOTP.bin"
-        if self.newTOTP or not os.path.exists(totp_path):
+        self.bootstrap_totp_path = "./BOOTSTRAP - TOTP.bin"
+        self.admin_totp_path = "./ADMIN - TOTP.bin"
+        if self.newTOTP or not os.path.exists(self.admin_totp_path):
             totp_secret_bytes = os.urandom(20)
             base32_secret = base64.b32encode(totp_secret_bytes).decode("utf-8")
             encrypted_totp = Encryption.encryptGCM(totp_secret_bytes, self.at_rest_key)
-            with open(totp_path, "wb") as f:f.write(encrypted_totp)
+            with open(self.admin_totp_path, "wb") as f:f.write(encrypted_totp)
             print(f"--- NEW TOTP SECRET (Base32): {base32_secret} ---")
             print("Console will be cleared in 30 seconds for security.")
             def clear_console():
                 try:subprocess.run('cls' if os.name == 'nt' else 'clear',shell=True)
                 except Exception:pass
             threading.Timer(30.0, clear_console).start()
-        else:
-            with open(totp_path, "rb") as f:totp_secret_bytes = Encryption.decryptGCM(f.read(), self.at_rest_key)
-            base32_secret = base64.b32encode(totp_secret_bytes).decode("utf-8")
-        self.totp = pyotp.TOTP(base32_secret)
         self._lock = threading.RLock()
         self._backend = backend.Server(host, port, handshake_worker=self._hs_worker, on_exchange=self._backend_on_exchange, simult_handshakes=simult_handshakes, simult_exchanges=simult_exchanges)
         self._keys = {}
         self._counters = {}
+        self._admin = {}
+        self._usernames = {}
+        self._pending_bootstrap_totp = {}
         self._backend.start()
     def start(self):self._backend.start()
     def _send_handshake(self, temp_cid, data):self._backend.send_handshake(temp_cid, data)
     def _recv_handshake(self, temp_cid, timeout=STD_TIMEOUT):return self._backend.recv_handshake(temp_cid, timeout=timeout)
     def _hs_worker(self, temp_cid):
         is_bootstrap = False
+        is_admin = False
         try:
             client_temp_pub = self._recv_handshake(temp_cid, timeout=STD_TIMEOUT)
             if client_temp_pub is None:raise ProtocolError("Handshake timed out")
-            if client_temp_pub.startswith(b"REQ_KEY"):
-                if not self.enable_bootstrap:raise ProtocolError("Bootstrap authentication is disabled")
-                if time.time()-self.last_bootstrap<45:raise ProtocolError("Bootstrap authentication is on cooldown")
+            if client_temp_pub.startswith(b"REQ_ADMIN"):
+                is_admin = True
+                client_init_pub = client_temp_pub[len(b"REQ_ADMIN"):]
+            elif client_temp_pub.startswith(b"REQ_KEY"):
+                if not self._enable_bootstrap:raise ProtocolError("Bootstrap authentication is disabled")
+                if time.time() - self.last_bootstrap < 45:raise ProtocolError("Bootstrap authentication is on cooldown")
                 is_bootstrap = True
                 client_init_pub = client_temp_pub[7:]
             else:client_init_pub = client_temp_pub
             init_key = Encryption.gen_x25519(True)
             tss = Encryption.shared_secret(init_key[0], client_init_pub)
-            if is_bootstrap:
-                nonce = os.urandom(32)
-                self._send_handshake(temp_cid, init_key[1] + nonce)
-                encrypted_totp = self._recv_handshake(temp_cid, timeout=4 * STD_TIMEOUT)
-                if encrypted_totp is None:raise ProtocolError("Timed out waiting for TOTP code")
-                hashed_totp = Encryption.decryptGCM(encrypted_totp, tss)
-                current_time = time.time()
-                totp_code = None
-                for offset in range(-1, 2):
-                    candidate = self.totp.at(current_time + offset * 30)
-                    candidate_hash = Encryption.basic_kdf(util.str_to_bytes(candidate), b"")
-                    if hmac.compare_digest(candidate_hash, hashed_totp):
-                        totp_code = candidate
-                        break
-                if totp_code is None:raise ProtocolError("Invalid TOTP code")
-                self.last_bootstrap=time.time()
-                self.admin_ed = Encryption.gen_ed25519(True)
-                salt = os.urandom(SALT_SIZE)
-                key = Encryption.kdf(util.str_to_bytes(totp_code), salt, 5)
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zf:
-                    zf.writestr("admin.prv", Encryption.encryptGCM(self.admin_ed[0], key))
-                    zf.writestr("admin.pub", Encryption.encryptGCM(self.admin_ed[1], key))
-                    zf.writestr("salt.bin", salt)
-                admin_zip_bytes = zip_buffer.getvalue()
-                self._send_handshake(temp_cid, Encryption.encryptGCM(admin_zip_bytes, tss))
-                admin_proof = self._recv_handshake(temp_cid, timeout=2 * STD_TIMEOUT)
-                if admin_proof is None:raise ProtocolError("Timed out waiting for admin proof")
-                verified = Encryption.ed25519_verify(self.admin_ed[1], admin_proof)
-                if Encryption.decryptGCM(verified, tss) != nonce:raise ProtocolError("Bad Admin Sig")
-                prv_b, pub_b = Encryption.gen_x25519(True)
-                self._send_handshake(temp_cid, Encryption.ed25519_sign(self.admin_ed[0], Encryption.encryptGCM(pub_b, tss)))
-                key_ack = self._recv_handshake(temp_cid, timeout=STD_TIMEOUT)
-                if key_ack is None:raise ProtocolError("Timed out waiting for auth-key ACK")
-                key_ack = Encryption.decryptGCM(Encryption.ed25519_verify(self.admin_ed[1], key_ack), tss)
-                if key_ack == b"0":raise ProtocolError("Client rejected auth key")
-                if key_ack != b"1":raise ProtocolError("Invalid auth key ACK")
-                fid = os.urandom(64).hex()
-                prv = os.path.join(self.auth_key_dir, fid + ".prv")
-                pub = os.path.join(self.auth_key_dir, fid + ".pub")
-                with open(prv, "wb") as f:f.write(Encryption.encryptGCM(prv_b, self.at_rest_key))
-                with open(pub, "wb") as f:f.write(Encryption.encryptGCM(pub_b, self.at_rest_key))
-            else:self._send_handshake(temp_cid, init_key[1])
-            encrypted_hash = self._recv_handshake(temp_cid, timeout=2 * STD_TIMEOUT)
-            if encrypted_hash is None:raise ProtocolError("Timed out waiting for auth identity")
-            _hash = Encryption.decryptGCM(encrypted_hash, tss)
-            auth_file = ""
-            for filename in os.listdir(self.auth_key_dir):
-                if not filename.endswith(".pub"):continue
-                auth_path = os.path.join(self.auth_key_dir, filename)
-                with open(auth_path, "rb") as f:encrypted_pub = f.read()
-                pub_key = Encryption.decryptGCM(encrypted_pub, self.at_rest_key)
-                if hmac.compare_digest(_hash, Encryption.basic_kdf(pub_key, b"", 6)):
-                    auth_file = auth_path
-                    break
-            if not auth_file:raise ProtocolError("Auth Denied")
-            with open(auth_file[:-4] + ".prv", "rb") as f:raw_prv = Encryption.decryptGCM(f.read(), self.at_rest_key)
-            encrypted_client_key = self._recv_handshake(temp_cid, timeout=STD_TIMEOUT)
-            if encrypted_client_key is None:raise ProtocolError("Timed out waiting for client key")
-            ekey = Encryption.kdf_fast(Encryption.shared_secret(raw_prv, Encryption.decryptGCM(encrypted_client_key, tss)), tss)
+            ekey_defined = False
             sc, rc = 1, 0
             def send_enc(data):
-                nonlocal sc
+                nonlocal sc, ekey_defined
                 ctr = sc.to_bytes(8, "big")
                 sc += 1
-                self._send_handshake(temp_cid, ctr + Encryption.encryptGCM(data, ekey, aad=ctr + b"1"))
-            def recv_enc():
-                nonlocal rc
-                payload = self._recv_handshake(temp_cid, timeout=STD_TIMEOUT)
-                if payload is None:raise ProtocolError("Timed out waiting for encrypted handshake")
+                if ekey_defined:self._send_handshake(temp_cid,ctr + Encryption.encryptGCM(data, ekey, aad=ctr + b"1"))
+                else:self._send_handshake(temp_cid,ctr + Encryption.encryptGCM(data, tss, aad=ctr + b"1"))
+            def recv_enc(timeout=STD_TIMEOUT):
+                nonlocal rc, ekey_defined
+                payload = self._recv_handshake(temp_cid, timeout=timeout)
+                if payload is None:raise ProtocolError("Timed out")
                 ctr = payload[:8]
                 counter = int.from_bytes(ctr, "big")
-                if counter <= rc:raise ProtocolError("Counter Error")
+                if counter != rc + 1:raise ProtocolError("Counter Error")
+                if ekey_defined:out=Encryption.decryptGCM(payload[8:], ekey, aad=ctr + b"0")
+                else:out=Encryption.decryptGCM(payload[8:], tss, aad=ctr + b"0")
                 rc = counter
-                return Encryption.decryptGCM(payload[8:], ekey, aad=ctr + b"0")
-            auth_test_key = Encryption.gen_ed25519(True)
-            send_enc(auth_test_key[1])
-            pub = recv_enc()
-            def send_signed_enc(data):
-                nonlocal sc
-                ctr = sc.to_bytes(8, "big")
-                sc += 1
-                encrypted = Encryption.encryptGCM(data, ekey, aad=ctr + b"1")
-                self._send_handshake(temp_cid, ctr + Encryption.ed25519_sign(auth_test_key[0], encrypted))
-            def recv_signed_enc():
-                nonlocal rc
-                payload = self._recv_handshake(temp_cid, timeout=STD_TIMEOUT)
-                if payload is None:raise ProtocolError("Timed out waiting for signed handshake")
-                ctr = payload[:8]
-                counter = int.from_bytes(ctr, "big")
-                if counter <= rc:raise ProtocolError("Counter Error")
-                rc = counter
-                encrypted = Encryption.ed25519_verify(pub, payload[8:])
-                return Encryption.decryptGCM(encrypted, ekey, aad=ctr + b"0")
-            nonce = os.urandom(256)
+                return out
+            if is_admin or is_bootstrap:
+                tss_salt = os.urandom(64)
+                self._send_handshake(temp_cid, init_key[1] + tss_salt)
+                totp_info = recv_enc()
+                salt=totp_info[:32]
+                hashed_totp=totp_info[32:]
+                current_time = time.time()
+                totp_code = None
+                totp_path = (self.admin_totp_path if is_admin else self.bootstrap_totp_path)
+                with open(totp_path, "rb") as f:totp_secret_bytes = Encryption.decryptGCM(f.read(), self.at_rest_key)
+                base32_secret = base64.b32encode(totp_secret_bytes).decode("utf-8")
+                totp = pyotp.TOTP(base32_secret)
+                for offset in range(-1, 2):
+                    candidate = totp.at(current_time + offset * 30)
+                    candidate_hash = Encryption.kdf_fast(util.str_to_bytes(candidate), salt)
+                    if hmac.compare_digest(candidate_hash, hashed_totp):totp_code = candidate
+                if totp_code is None:raise ProtocolError("Invalid TOTP code")
+                if is_bootstrap:self.last_bootstrap = time.time()
+                tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
+                send_enc(b'')
+                if is_admin:
+                    ekey = tss
+                    ekey_defined = True
+                    _hash = temp_cid
+                elif is_bootstrap:
+                    nonce = os.urandom(64)
+                    send_enc(nonce)
+                    nonce = Encryption.basic_kdf(nonce, b"", 64)
+                    if recv_enc() != nonce:raise ProtocolError("Auth Failed")
+                    send_enc(Encryption.basic_kdf(nonce, b"", 64))
+                    prv_b, pub_b = Encryption.gen_x25519(True)
+                    send_enc(pub_b)
+                    if recv_enc() != b"1":raise ProtocolError("Client rejected auth key")
+                    fid = os.urandom(16).hex()
+                    prv = os.path.join(self.auth_key_dir, fid + ".prv")
+                    pub = os.path.join(self.auth_key_dir, fid + ".pub")
+                    with open(prv, "wb") as f:f.write(Encryption.encryptGCM(prv_b, self.at_rest_key))
+                    with open(pub, "wb") as f:f.write(Encryption.encryptGCM(pub_b, self.at_rest_key))
+            else:self._send_handshake(temp_cid, init_key[1])
+            if not is_admin:
+                _hash = recv_enc(STD_TIMEOUT * 2)
+                auth_file = ""
+                for filename in os.listdir(self.auth_key_dir):
+                    if not filename.endswith(".pub"):continue
+                    auth_path = os.path.join(self.auth_key_dir, filename)
+                    with open(auth_path, "rb") as f:encrypted_pub = f.read()
+                    pub_key = Encryption.decryptGCM(encrypted_pub, self.at_rest_key)
+                    if hmac.compare_digest(_hash,Encryption.basic_kdf(pub_key, b"", 6)):
+                        auth_file = auth_path
+                        break
+                if not auth_file:raise ProtocolError("Auth Denied")
+                with open(auth_file[:-4] + ".prv", "rb") as f:raw_prv = Encryption.decryptGCM(f.read(), self.at_rest_key)
+                ekey = Encryption.kdf_fast(Encryption.shared_secret(raw_prv, recv_enc()),tss)
+                ekey_defined = True
+            nonce = os.urandom(64)
             send_enc(nonce)
-            if recv_signed_enc() != nonce:raise ProtocolError("Bad Sig")
-            client_nonce = recv_enc()
-            send_signed_enc(client_nonce)
+            nonce = Encryption.basic_kdf(nonce, b"", 64)
+            if recv_enc() != nonce:raise ProtocolError("Auth Failed")
+            send_enc(Encryption.basic_kdf(nonce, b"", 64))
             with self._lock:
                 self._keys[_hash] = ekey
                 self._counters[_hash] = [sc, rc]
+                self._admin[_hash] = is_admin
+                try:self._usernames[_hash]=auth_file[:-4]
+                except:pass
                 self._backend.auth_finished(temp_cid, _hash)
         except Exception as exc:traceback.print_exception(exc)
+    def _admin_send_json(self, result, eid, cid):
+        header = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        packet = len(header).to_bytes(4, "big") + header
+        self.send(packet, eid, cid)
+    def _admin_require(self, cid):
+        if not self._admin.get(cid, False):raise ProtocolError("Not Admin")
+    def setup_bootstrap_totp(self, cid, eid):
+        self._admin_require(cid)
+        secret_bytes = os.urandom(20)
+        with self._lock:self._pending_bootstrap_totp[cid] = secret_bytes
+        self._admin_send_json({"status": "ok","secret": base64.b32encode(secret_bytes).decode("ascii"),"message": "Pending verification; the active secret is unchanged until verified."}, eid, cid)
+    def bootstrapping_enabled(self,cid,eid):
+        if self._enable_bootstrap:self._admin_send_json({"status": "ok", "enabled": True},eid,cid)
+        else:self._admin_send_json({"status": "ok", "enabled": False},eid,cid)
+    def bootstrap_status(self, cid, eid):
+        self._admin_require(cid)
+        self._admin_send_json({"status": "ok","enabled": bool(self._enable_bootstrap),"totp_configured": os.path.isfile(self.bootstrap_totp_path)}, eid, cid)
+    def verify_bootstrap_totp(self, cid, eid, code):
+        self._admin_require(cid)
+        code = str(code).strip().replace(" ", "")
+        with self._lock:secret_bytes = self._pending_bootstrap_totp.get(cid)
+        if secret_bytes is None:raise ProtocolError("No pending bootstrap TOTP setup. Generate a new secret first.")
+        totp = pyotp.TOTP(base64.b32encode(secret_bytes).decode("ascii"))
+        if not (code.isdigit() and len(code) == totp.digits and totp.verify(code, valid_window=1)):raise ProtocolError("TOTP verification failed; check the authenticator time and try again.")
+        encrypted = Encryption.encryptGCM(secret_bytes, self.at_rest_key)
+        temp_path = self.bootstrap_totp_path + ".tmp"
+        try:
+            with open(temp_path, "wb") as stream:
+                stream.write(encrypted)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, self.bootstrap_totp_path)
+        except Exception:
+            try:os.remove(temp_path)
+            except OSError:pass
+            raise
+        with self._lock:self._pending_bootstrap_totp.pop(cid, None)
+        self._admin_send_json({"status": "ok","verified": True,"message": "Bootstrap TOTP verified and saved."}, eid, cid)
+    def enable_bootstrap(self,cid,eid):
+        self._admin_require(cid)
+        self._enable_bootstrap=True
+        self._admin_send_json({"status": "ok", "enabled": True},eid,cid)
+    def disable_bootstrap(self,cid,eid):
+        self._admin_require(cid)
+        self._enable_bootstrap=False
+        self._admin_send_json({"status": "ok", "enabled": False},eid,cid)
+    def _admin_parse_client_id(self, client_id):
+        if isinstance(client_id, bytes):return client_id
+        if isinstance(client_id, str):
+            try:return bytes.fromhex(client_id)
+            except ValueError:raise ProtocolError("Invalid client ID")
+        raise ProtocolError("Invalid client ID")
+    def _admin_validate_username(self, username):
+        if not isinstance(username, str):raise ProtocolError("Invalid username")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", username):raise ProtocolError("Invalid username")
+        if username in (".", ".."):raise ProtocolError("Invalid username")
+        return username
+    def _admin_validate_stored_username(self, username):
+        if not isinstance(username, str) or not username:raise ProtocolError("Invalid stored username")
+        if "/" in username or "\\" in username:
+            username = username.replace("\\", "/").rsplit("/", 1)[-1]
+            username = os.path.splitext(username)[0]
+        if username in ("", ".", "..") or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", username):raise ProtocolError("Invalid stored username")
+        return username
+    def list_users(self,cid,eid):
+        self._admin_require(cid)
+        tmp=set()
+        users=set()
+        for x in os.listdir('./keys'):
+            name=x[:-4]
+            if x.endswith('.prv') or x.endswith('.pub'):
+                if name in tmp:users.add(name);tmp.discard(name)
+                else:tmp.add(x[:-4])
+        self._admin_send_json({"status": "ok", "users": sorted(users)},eid,cid)
+    def list_connections(self, cid, eid):
+        self._admin_require(cid)
+        with self._lock:connections = [{"cid": client_id.hex() if isinstance(client_id, bytes) else str(client_id),"username": self._usernames[client_id],} for client_id in self._keys if client_id in self._usernames]
+        connections.sort(key=lambda client: client["username"].lower())
+        self._admin_send_json({"status": "ok", "connections": connections},eid,cid)
+    def rename_username(self, cid, eid, target_cid, new_username):
+        self._admin_require(cid)
+        new_username = self._admin_validate_username(new_username)
+        with self._lock:
+            connected_id = None
+            if isinstance(target_cid, bytes):
+                if target_cid in self._usernames and target_cid in self._keys:connected_id = target_cid
+                else:raise ProtocolError("Unknown connected client")
+            elif isinstance(target_cid, str):
+                try:parsed_id = bytes.fromhex(target_cid)
+                except ValueError:parsed_id = None
+                if parsed_id is not None and parsed_id in self._usernames and parsed_id in self._keys:connected_id = parsed_id
+            if connected_id is not None:old_username = self._admin_validate_stored_username(self._usernames[connected_id])
+            elif isinstance(target_cid, str):old_username = self._admin_validate_stored_username(target_cid)
+            else:raise ProtocolError("Invalid client identifier")
+            old_prv = os.path.join(self.auth_key_dir, old_username + ".prv")
+            old_pub = os.path.join(self.auth_key_dir, old_username + ".pub")
+            new_prv = os.path.join(self.auth_key_dir, new_username + ".prv")
+            new_pub = os.path.join(self.auth_key_dir, new_username + ".pub")
+            if old_username == new_username:result = {"ok": True,"username": new_username,"connected": connected_id is not None,"renamed_files": False,}
+            else:
+                if not os.path.isfile(old_prv) or not os.path.isfile(old_pub):raise ProtocolError("Client key files not found")
+                if os.path.exists(new_prv) or os.path.exists(new_pub):raise ProtocolError("Username already exists")
+                try:
+                    os.rename(old_prv, new_prv)
+                    try:os.rename(old_pub, new_pub)
+                    except Exception:
+                        os.rename(new_prv, old_prv)
+                        raise
+                except Exception as exc:raise ProtocolError(f"Rename failed: {exc}") from exc
+                for live_id, stored_username in list(self._usernames.items()):
+                    if live_id not in self._keys:continue
+                    try:normalized = self._admin_validate_stored_username(stored_username)
+                    except ProtocolError:continue
+                    if normalized == old_username:self._usernames[live_id] = new_username
+                result = {"ok": True,"old_username": old_username,"username": new_username,"connected": connected_id is not None,"renamed_files": True,}
+        result["status"] = "ok"
+        self._admin_send_json(result, eid, cid)
+    def deauth_client(self, cid, eid, target_cid):
+        self._admin_require(cid)
+        target_cid = self._admin_parse_client_id(target_cid)
+        with self._lock:
+            if target_cid not in self._usernames:raise ProtocolError("Unknown client")
+            username = self._admin_validate_stored_username(self._usernames[target_cid])
+            prv = os.path.join(self.auth_key_dir, username + ".prv")
+            pub = os.path.join(self.auth_key_dir, username + ".pub")
+            if not os.path.isfile(prv) or not os.path.isfile(pub):raise ProtocolError("Client key files not found")
+            os.remove(prv)
+            os.remove(pub)
+        self._admin_send_json({"status": "ok", "deauthenticated": True, "username": username},eid,cid)
+    def disconnect_client(self, cid, eid, target_cid):
+        self._admin_require(cid)
+        target_cid = self._admin_parse_client_id(target_cid)
+        with self._lock:
+            if target_cid not in self._usernames:raise ProtocolError("Unknown client")
+            if target_cid not in self._keys:raise ProtocolError("Client is not connected")
+        close_client = getattr(self._backend, "close_client", None)
+        if not callable(close_client):raise ProtocolError("Backend does not support close_client(client_id)")
+        try:close_client(target_cid)
+        except Exception as exc:raise ProtocolError(f"Disconnect failed: {exc}") from exc
+        with self._lock:self._usernames.pop(target_cid, None)
+        self.close_client(target_cid)
+        self._admin_send_json({"status": "ok", "disconnected": True},eid,cid)
     def _backend_on_exchange(self, cid, eid):
         try:
             data = self.recv(cid, eid=eid, timeout=STD_TIMEOUT)
@@ -237,15 +364,20 @@ class TCPServer:
             with self._lock:
                 self._keys.pop(client_id, None)
                 self._counters.pop(client_id, None)
+                self._admin.pop(client_id, None)
+                self._usernames.pop(client_id, None)
     def set_backpressure(self, client_id, enabled=True):self._backend.set_backpressure(client_id, enabled)
     def close(self):
         self._backend.stop()
         with self._lock:
             self._keys.clear()
+            self._admin.clear()
+            self._usernames.clear()
             self._counters.clear()
 class TCPClient:
-    def __init__(self, host, port, password, auth_key="./auth_key", auth_key_code_callback=None, on_exchange=None, simult_exchanges=4):
+    def __init__(self, host, port, password, auth_key="./auth_key", admin_auth_code = None,auth_key_code_callback=None, on_exchange=None, simult_exchanges=4):
         self.on_exchange = on_exchange
+        self.admin_auth_code=admin_auth_code
         self._lock = threading.RLock()
         self.sc = 1
         self.rc = 0
@@ -259,40 +391,63 @@ class TCPClient:
     def _send_handshake(self, payload):self._backend.send_handshake(payload)
     def _recv_handshake(self, timeout=STD_TIMEOUT):return self._backend.recv_handshake(timeout=timeout)
     def _authenticate(self, password, auth_key, auth_key_code_callback):
-        is_bootstrap = not os.path.exists(auth_key)
+        is_admin = isinstance(self.admin_auth_code, str)
+        is_bootstrap = not is_admin and not os.path.exists(auth_key)
+        ekey_defined = False
+        tss = None
+        def _send_enc(payload):
+            nonlocal ekey_defined
+            ctr = self.sc.to_bytes(8, "big")
+            self.sc += 1
+            if ekey_defined:self._send_handshake(ctr + Encryption.encryptGCM(payload, self.ekey, aad=ctr + b"0"))
+            else:self._send_handshake(ctr + Encryption.encryptGCM(payload, tss, aad=ctr + b"0"))
+        def _recv_enc(timeout=STD_TIMEOUT):
+            nonlocal ekey_defined
+            payload = self._recv_handshake(timeout=timeout)
+            if payload is None:raise ProtocolError("Timed out")
+            ctr = payload[:8]
+            counter = int.from_bytes(ctr, "big")
+            if counter != self.rc + 1:raise ProtocolError("Counter Error")
+            if ekey_defined:out=Encryption.decryptGCM(payload[8:], self.ekey, aad=ctr + b"1")
+            else:out=Encryption.decryptGCM(payload[8:], tss, aad=ctr + b"1")
+            self.rc = counter
+            return out
         init_key = Encryption.gen_x25519(True)
-        if is_bootstrap:
+        if is_admin:
+            if not self.admin_auth_code:raise ValueError("admin_auth_code must not be empty")
+            self._send_handshake(b"REQ_ADMIN" + init_key[1])
+            response = self._recv_handshake(timeout=STD_TIMEOUT)
+            if response is None:raise ProtocolError("Handshake timed out")
+            pub_len = len(init_key[1])
+            if len(response) != pub_len + 64:raise ProtocolError("Invalid admin handshake")
+            server_init_pub = response[:-64]
+            salt = os.urandom(32)
+            tss_salt = response[-64:]
+            tss = Encryption.shared_secret(init_key[0], server_init_pub)
+            totp_code = self.admin_auth_code
+            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt))
+            tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
+            _recv_enc(STD_TIMEOUT * 2)
+            self.ekey = tss
+            ekey_defined = True
+        elif is_bootstrap:
             if auth_key_code_callback is None:raise ValueError("auth_key_code_callback is required for bootstrap")
             self._send_handshake(b"REQ_KEY" + init_key[1])
             response = self._recv_handshake(timeout=STD_TIMEOUT)
             if response is None:raise ProtocolError("Handshake timed out")
             server_init_pub = response[:len(init_key[1])]
-            nonce = response[len(init_key[1]):]
+            salt = os.urandom(32)
+            tss_salt = response[-64:]
             tss = Encryption.shared_secret(init_key[0], server_init_pub)
             totp_code = auth_key_code_callback()
-            self._send_handshake(Encryption.encryptGCM(Encryption.basic_kdf(totp_code.encode("utf-8"),b''), tss))
-            encrypted_admin_zip = self._recv_handshake(timeout=2 * STD_TIMEOUT)
-            if encrypted_admin_zip is None:raise ProtocolError("Timed out waiting for admin zip")
-            admin_zip_bytes = Encryption.decryptGCM(encrypted_admin_zip, tss)
-            with zipfile.ZipFile(io.BytesIO(admin_zip_bytes), "r") as zf:
-                for filename in ("admin.prv", "admin.pub", "salt.bin"):
-                    if zf.getinfo(filename).file_size > 1024 * 1024:raise MemoryError(f"File {filename} exceeds safety limits.")
-                admin_prv_enc = zf.read("admin.prv")
-                admin_pub_enc = zf.read("admin.pub")
-                salt = zf.read("salt.bin")
-            key = Encryption.kdf(util.str_to_bytes(totp_code), salt, 5)
-            admin_prv = Encryption.decryptGCM(admin_prv_enc, key)
-            admin_pub = Encryption.decryptGCM(admin_pub_enc, key)
-            self._send_handshake(Encryption.ed25519_sign(admin_prv, Encryption.encryptGCM(nonce, tss)))
-            signed_auth_pub = self._recv_handshake(timeout=STD_TIMEOUT)
-            if signed_auth_pub is None:raise ProtocolError("Handshake timed out")
-            auth_pub = Encryption.decryptGCM(Encryption.ed25519_verify(admin_pub, signed_auth_pub), tss)
-            if not auth_pub:
-                signed_nack = Encryption.ed25519_sign(admin_prv, Encryption.encryptGCM(b"0", tss))
-                self._send_handshake(signed_nack)
-                raise ProtocolError("Invalid Server Auth Key")
-            signed_ack = Encryption.ed25519_sign(admin_prv, Encryption.encryptGCM(b"1", tss))
-            self._send_handshake(signed_ack)
+            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt))
+            tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
+            _recv_enc(STD_TIMEOUT * 2)
+            nonce = Encryption.basic_kdf(_recv_enc(), b"", 64)
+            _send_enc(nonce)
+            if _recv_enc(STD_TIMEOUT) != Encryption.basic_kdf(nonce, b"", 64):raise ProtocolError("Auth Failed")
+            auth_pub = _recv_enc()
+            _send_enc(b"1")
             salt_rest = os.urandom(SALT_SIZE)
             self.at_rest_key = _derive_at_rest_key(password, salt_rest)
             with open(auth_key, "wb") as f:
@@ -311,46 +466,15 @@ class TCPClient:
             if not encrypted_pub:raise ProtocolError("Invalid auth_key: missing key data")
             self.at_rest_key = _derive_at_rest_key(password, salt)
             pub_key = Encryption.decryptGCM(encrypted_pub, self.at_rest_key)
-        self._send_handshake(Encryption.encryptGCM(Encryption.basic_kdf(pub_key, b"", 6), tss))
-        keys = Encryption.gen_x25519(True)
-        self._send_handshake(Encryption.encryptGCM(keys[1], tss))
-        self.ekey = Encryption.kdf_fast(Encryption.shared_secret(keys[0], pub_key), tss)
-        def _send_enc(payload):
-            ctr = self.sc.to_bytes(8, "big")
-            self.sc += 1
-            self._send_handshake(ctr + Encryption.encryptGCM(payload, self.ekey, aad=ctr + b"0"))
-        def _recv_enc(raw_payload):
-            ctr = raw_payload[:8]
-            counter = int.from_bytes(ctr, "big")
-            if counter <= self.rc:raise ProtocolError("Counter Error")
-            self.rc = counter
-            return Encryption.decryptGCM(raw_payload[8:], self.ekey, aad=ctr + b"1")
-        auth_test_key = Encryption.gen_ed25519(True)
-        raw = self._recv_handshake(timeout=STD_TIMEOUT)
-        if raw is None:raise ProtocolError("Handshake timed out")
-        pub = _recv_enc(raw)
-        _send_enc(auth_test_key[1])
-        def send_signed_enc(data):
-            ctr = self.sc.to_bytes(8, "big")
-            self.sc += 1
-            encrypted = Encryption.encryptGCM(data, self.ekey, aad=ctr + b"0")
-            self._send_handshake(ctr + Encryption.ed25519_sign(auth_test_key[0], encrypted))
-        def recv_signed_enc():
-            payload = self._recv_handshake(timeout=STD_TIMEOUT)
-            if payload is None:raise ProtocolError("Handshake timed out")
-            ctr = payload[:8]
-            counter = int.from_bytes(ctr, "big")
-            if counter <= self.rc:raise ProtocolError("Counter Error")
-            self.rc = counter
-            encrypted = Encryption.ed25519_verify(pub, payload[8:])
-            return Encryption.decryptGCM(encrypted, self.ekey, aad=ctr + b"1")
-        raw = self._recv_handshake(timeout=STD_TIMEOUT)
-        if raw is None:raise ProtocolError("Handshake timed out")
-        nonce = _recv_enc(raw)
-        send_signed_enc(nonce)
-        client_nonce = os.urandom(256)
-        _send_enc(client_nonce)
-        if recv_signed_enc() != client_nonce:raise ProtocolError("Bad Sig")
+        if not is_admin:
+            _send_enc(Encryption.basic_kdf(pub_key, b"", 6))
+            keys = Encryption.gen_x25519(True)
+            _send_enc(keys[1])
+            self.ekey = Encryption.kdf_fast(Encryption.shared_secret(keys[0], pub_key), tss)
+            ekey_defined = True
+        nonce = Encryption.basic_kdf(_recv_enc(), b"", 64)
+        _send_enc(nonce)
+        if _recv_enc() != Encryption.basic_kdf(nonce, b"", 64):raise ProtocolError("Auth Failed")
         self._backend.auth_finished()
     def send(self, payload, eid=None):
         if eid is not None and (not isinstance(eid, bytes) or len(eid) != EID_SIZE):raise ValueError("eid must be exactly 8 bytes")
