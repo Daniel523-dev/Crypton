@@ -158,7 +158,7 @@ To revoke a client, use the administrator tools to deauthorize its stored identi
 
 - Use strong, unique server and client passwords. The networking module checks password strength with `zxcvbn`.
 - Protect server identity files, salt files, TOTP secrets, client identity files, and backup copies with strict operating-system permissions.
-- The custom Crypton protocol encrypts application messages in transit, but it is not a drop-in replacement for TLS and has not been established as independently audited or formally verified.
+- The custom Crypton protocol encrypts application messages in transit, but it has not been established as independently audited or formally verified.
 - Files saved by `server.py` in the shared directory are plaintext at rest unless the operating system or storage device provides encryption. The server can read file contents.
 - Local hydrated/cache files may contain plaintext. Do not delete from a mounted directory just to clear the cache; it may delete the remote file.
 - Do not expose the listening TCP port to untrusted networks before reviewing the protocol and deployment threat model.
