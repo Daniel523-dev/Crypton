@@ -88,7 +88,7 @@ The current implementation uses TOTP-based bootstrap enrollment. It does **not**
 3. Enter the server host/IP and the current administrator TOTP code from your authenticator app.
 4. In the admin console, use the bootstrap TOTP setup option to generate a new secret. Add the displayed secret to an authenticator app, then verify it with a current code when prompted.
 5. Enable bootstrap enrollment in the admin console.
-6. Communicate the bootstrap TOTP secret or enrollment code to the intended new client through a trusted channel.
+6. Communicate the bootstrap TOTP enrollment code to the intended new client through a trusted channel.
 
 The administrator TOTP and bootstrap TOTP serve different purposes. Do not distribute the administrator secret to ordinary clients.
 
