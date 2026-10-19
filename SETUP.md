@@ -27,7 +27,7 @@ The `backend` networking extension is required even when you use the Python stor
 
 ## 2. Build the `backend` extension
 
-> **Note:** If you're using Python 3.14 on Windows 64-bit, you can download `backend.cp314-win_amd64.pyd` instead.
+> **Note:** Check `backend compiled.zip` to see if there is a precompiled version that fits your python version.
 
 Install the build dependency:
 
