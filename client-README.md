@@ -2,7 +2,7 @@
 
 `client.py` is the user-facing client for the Crypton storage server. It supports a native mount on Windows and Linux, plus a Python API for direct remote file operations.
 
-> **Data handling:** Network messages are encrypted in transit, but the server writes ordinary plaintext files in its shared directory. Windows-hydrated and Linux-cached files may also exist as local plaintext. Crypton should not be described as strict end-to-end encrypted storage in its current implementation.
+> **Data handling:** Network messages are encrypted in transit, but the server writes ordinary plaintext files in its shared directory. Windows-hydrated and Linux-cached files may also exist as local plaintext.
 
 ## Requirements
 
