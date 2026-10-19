@@ -1,0 +1,14 @@
+name: VulnHawk Security Scan
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  vulnhawk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: momenbasel/vulnhawk@main
+        with:
+          target: '.'
