@@ -324,7 +324,6 @@ class TCPServer:
         try:close_client(target_cid)
         except Exception as exc:raise ProtocolError(f"Disconnect failed: {exc}") from exc
         with self._lock:self._usernames.pop(target_cid, None)
-        self.close_client(target_cid)
         self._admin_send_json({"status": "ok", "disconnected": True},eid,cid)
     def _backend_on_exchange(self, cid, eid):
         try:
