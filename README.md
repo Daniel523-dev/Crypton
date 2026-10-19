@@ -56,7 +56,7 @@ The native extension is a runtime dependency: `network.py` imports `backend`. Mo
 ## Security and operational notes
 
 - Network messages are encrypted and authenticated by the Crypton protocol, but the custom protocol has not been shown here to have an independent security audit or formal verification.
-- The live networking path uses the custom TCP protocol; the certificate helper in `Encryption.py` does not make the transport TLS.
+- The live networking path uses the custom TCP protocol; the certificate helper in `Encryption.py` is completely unused in this project.
 - Server-side files in `~/Shared` are plaintext at rest unless the host provides disk/file encryption. Linux cache, working, and recovery files can also contain plaintext; Windows-hydrated files may consume local disk space.
 - Use strong, unique passwords and protect `server_salt.bin`, the server key directory, TOTP state files, and client identity files. Back these up securely.
 - Removing a client's server-side identity keys prevents future authentications. It does not necessarily terminate an already-authenticated session; use the admin console's disconnect action when immediate disconnection is required.
