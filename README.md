@@ -40,7 +40,7 @@ The default server storage directory is `~/Shared`. The command-line client moun
 | [`backend-README.md`](backend-README.md) | C++/pybind11 TCP extension, exported classes, build instructions and limits |
 | [`Encryption-README.md`](Encryption-README.md) | Encryption helpers, key derivation, hashing, key exchange, signatures, certificate helpers |
 | [`vfs-README.md`](vfs-README.md) | Linux FUSE mount and VFS cache/synchronization behavior |
-| [`winfuse3-README.md`](winfuse3-README.md) | Windows mount integration and Cloud Files API behavior |
+| [`winfuse-README.md`](winfuse-README.md) | Windows mount integration and Cloud Files API behavior |
 
 ## Architecture
 
@@ -51,7 +51,7 @@ The default server storage directory is `~/Shared`. The command-line client moun
 - `backend.cpp` builds the importable Python extension named `backend`; it implements the native TCP transport, framing, queues, callbacks, and connection lifecycle.
 - `util.py` is a project-local helper module required by the Python cryptography/networking code.
 
-The native extension is a runtime dependency: `network.py` imports `backend`. Mounting also needs the platform-specific integration and its dependencies. See [`backend-README.md`](backend-README.md), [`vfs-README.md`](vfs-README.md), and [`winfuse3-README.md`](winfuse3-README.md).
+The native extension is a runtime dependency: `network.py` imports `backend`. Mounting also needs the platform-specific integration and its dependencies. See [`backend-README.md`](backend-README.md), [`vfs-README.md`](vfs-README.md), and [`winfuse-README.md`](winfuse-README.md).
 
 ## Security and operational notes
 
