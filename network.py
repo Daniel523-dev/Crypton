@@ -118,8 +118,8 @@ class TCPServer:
                 rc = counter
                 return out
             if is_admin or is_bootstrap:
-                tss_salt = os.urandom(64)
-                self._send_handshake(temp_cid, init_key[1] + tss_salt)
+                tss_salt,totp_salt = os.urandom(64),os.urandom(32)
+                self._send_handshake(temp_cid, init_key[1] + tss_salt + totp_salt)
                 totp_info = recv_enc()
                 salt=totp_info[:32]
                 hashed_totp=totp_info[32:]
@@ -131,7 +131,7 @@ class TCPServer:
                 totp = pyotp.TOTP(base32_secret)
                 for offset in range(-1, 2):
                     candidate = totp.at(current_time + offset * 30)
-                    candidate_hash = Encryption.kdf_fast(util.str_to_bytes(candidate), salt)
+                    candidate_hash = Encryption.kdf_fast(util.str_to_bytes(candidate), salt + totp_salt)
                     if hmac.compare_digest(candidate_hash, hashed_totp):totp_code = candidate
                 if totp_code is None:raise ProtocolError("Invalid TOTP code")
                 if is_bootstrap:self.last_bootstrap = time.time()
@@ -419,12 +419,13 @@ class TCPClient:
             if response is None:raise ProtocolError("Handshake timed out")
             pub_len = len(init_key[1])
             if len(response) != pub_len + 64:raise ProtocolError("Invalid admin handshake")
-            server_init_pub = response[:-64]
+            server_init_pub = response[:-96]
             salt = os.urandom(32)
-            tss_salt = response[-64:]
+            tss_salt = response[-96:-32]
+            totp_salt = response[-32:]
             tss = Encryption.shared_secret(init_key[0], server_init_pub)
             totp_code = self.admin_auth_code
-            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt))
+            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt + totp_salt))
             tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
             _recv_enc(STD_TIMEOUT * 2)
             self.ekey = tss
@@ -436,10 +437,11 @@ class TCPClient:
             if response is None:raise ProtocolError("Handshake timed out")
             server_init_pub = response[:len(init_key[1])]
             salt = os.urandom(32)
-            tss_salt = response[-64:]
+            tss_salt = response[-96:-32]
+            totp_salt = response[-32:]
             tss = Encryption.shared_secret(init_key[0], server_init_pub)
             totp_code = auth_key_code_callback()
-            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt))
+            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt + totp_salt))
             tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
             _recv_enc(STD_TIMEOUT * 2)
             nonce = Encryption.basic_kdf(_recv_enc(), b"", 64)
