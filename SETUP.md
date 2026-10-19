@@ -106,7 +106,7 @@ If `./auth_key` already exists, the client attempts normal authentication with t
 
 ### 4.3 Disable bootstrap enrollment
 
-After the intended client or clients are enrolled, log back in through admin mode and disable bootstrap enrollment. Keep bootstrap disabled except during a planned enrollment window. Treat the bootstrap TOTP as a privileged onboarding credential.
+After the intended client or clients are enrolled, log back in through admin mode and disable bootstrap enrollment. Keep bootstrap disabled except during a planned enrollment window to reduce DoS potential. Treat the bootstrap TOTP as a privileged onboarding credential.
 
 ## 5. Start the client and mount storage
 
