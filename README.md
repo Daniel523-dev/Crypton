@@ -63,6 +63,41 @@ The native extension is a runtime dependency: `network.py` imports `backend`. Mo
 - Do not delete files from a mounted directory just to reclaim local cache space. A delete may affect the remote file itself. Use the supported cache-management procedure for the relevant mount backend.
 - Optional autofill integration is provided by the separate [Psudo-TPM project](https://github.com/Daniel523-dev/Psudo-TPM). It is not required for core Crypton operation.
 
+## Contributing
+
+**Contributions of any kind are welcome!** You don't need to be a cryptography expert, know the entire codebase, or write code to help improve Crypton.
+
+Crypton is a self-hosted remote-storage project for Windows and Linux. I welcome outside feedback, testing, security reviews, bug reports, documentation improvements, and code contributions.
+
+### How you can help
+
+- **🔒 Review security and cryptography.** Examine the networking protocol, authentication flow, key handling, encryption implementation, and threat model. Question assumptions, identify potential weaknesses, and suggest improvements. Independent review is especially valuable.
+- **🐛 Report bugs.** Try Crypton on your system, find unexpected behavior, and open an issue with steps to reproduce it. Small edge cases are worth reporting, too.
+- **🧪 Test on different systems.** Help test Windows and Linux setups, file transfers, large files, interrupted connections, concurrent operations, mounting, caching, and recovery behavior.
+- **📖 Improve documentation.** Clarify installation instructions, explain confusing parts of the architecture, improve examples, or document problems you encountered.
+- **💡 Suggest ideas.** Open an issue to propose a feature, discuss a design decision, ask a question, or point out something that could be simpler or safer.
+- **💻 Contribute code and tests.** Fix a bug, add a regression test, improve error handling, or help with maintainability. Small, focused pull requests are appreciated.
+
+### Reporting issues
+
+For ordinary bugs and suggestions, [open a GitHub issue](https://github.com/Daniel523-dev/Crypton/issues/new). Include your operating system, relevant dependency versions, steps to reproduce the problem, and the expected versus actual behavior. Remove passwords, keys, authentication files, and other sensitive information from logs or examples.
+
+For security vulnerabilities, please use the repository's private vulnerability-reporting channel rather than publishing exploitable details in a public issue.
+
+### A note on security
+
+Crypton's security deserves careful independent scrutiny. As documented in the README, the server currently decrypts requests and stores file contents as ordinary files, and the custom network protocol has not been independently audited or formally verified in the documentation.
+
+Please review the documented security assumptions and limitations before relying on Crypton for sensitive data. Security findings, questions, and constructive criticism are welcome.
+
+### Getting started
+
+You do not need to submit a pull request to contribute. An issue describing a bug, a question about the threat model, a test result from a different operating system, or a suggestion for improving the project can all be valuable contributions. This project is designed to work on windows and linux, macOS is unsupported.
+
+Not sure whether something is worth reporting? Please open an issue and explain what you found.
+
+Thank you for taking the time to help make Crypton better!
+
 ## License
 
 Crypton is released under the GNU General Public License v3.0 (GPL-3.0). See [`LICENSE`](LICENSE) for the full terms.
