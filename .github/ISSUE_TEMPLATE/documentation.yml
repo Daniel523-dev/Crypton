@@ -1,0 +1,35 @@
+name: Documentation improvement
+description: Report unclear, missing, or incorrect documentation.
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation issues are valuable contributions. Please identify the page or section and what confused you.
+  - type: input
+    id: location
+    attributes:
+      label: Documentation location
+      description: File path, heading, or URL.
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: What is unclear, missing, or incorrect?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: A proposed wording or example is helpful but not required.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final check
+      options:
+        - label: I checked whether a similar documentation issue already exists.
+          required: true

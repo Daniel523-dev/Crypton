@@ -1,0 +1,86 @@
+name: Bug report
+description: Report a reproducible problem with Crypton.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please search existing issues first.
+        **Do not include credentials, keys, private files, or sensitive logs.**
+        If this may be a security vulnerability, do not submit it publicly; follow SECURITY.md.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem clearly.
+      placeholder: A concise description of the unexpected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest set of steps that reliably reproduces the issue.
+      placeholder: |
+        1. Start...
+        2. Configure...
+        3. Perform...
+        4. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include sanitized error messages if useful.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Crypton version or commit
+      description: Provide a release, version, or commit hash if known.
+      placeholder: e.g. commit hash or release tag
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - Other
+        - Multiple operating systems
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and configuration
+      description: Include relevant dependency versions and configuration details. Redact secrets.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Remove credentials, keys, personal information, and private data before sharing.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final checks
+      options:
+        - label: I searched for an existing issue.
+          required: true
+        - label: I removed secrets and sensitive information from this report.
+          required: true
+        - label: This is not a suspected security vulnerability being disclosed publicly.
+          required: true

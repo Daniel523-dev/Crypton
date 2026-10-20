@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an improvement or discuss a project direction.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please focus on the problem and who would benefit.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem should this solve?
+      description: Describe the use case or limitation you have encountered.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: Describe your proposed solution. Alternatives are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Are there workarounds or other approaches?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Examples, diagrams, or related issues. Do not include secrets or private data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final checks
+      options:
+        - label: I searched for an existing issue or discussion.
+          required: true

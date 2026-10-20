@@ -1,0 +1,74 @@
+name: Testing report
+description: Share results from testing Crypton on a system or under a particular scenario.
+title: "[Testing]: "
+labels:
+  - testing
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Testing reports help identify platform-specific problems and reliability gaps.
+        Test only systems and data you own or are authorized to use. Do not include secrets or private data.
+  - type: input
+    id: scenario
+    attributes:
+      label: What did you test?
+      description: Feature, workflow, or scenario.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Crypton version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - Other
+        - Multiple operating systems
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Environment and setup
+      description: Relevant hardware, dependencies, configuration, and steps.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Passed
+        - Failed
+        - Partially passed
+        - Blocked / unable to test
+    validations:
+      required: true
+  - type: textarea
+    id: findings
+    attributes:
+      label: Observations and findings
+      description: Include errors or unexpected behavior. For suspected security vulnerabilities, report privately using SECURITY.md instead.
+    validations:
+      required: true
+  - type: textarea
+    id: followup
+    attributes:
+      label: Suggested follow-up
+      description: Optional improvements, additional tests, or questions.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final checks
+      options:
+        - label: I removed secrets and sensitive information.
+          required: true
+        - label: This report does not disclose a suspected vulnerability publicly.
+          required: true
