@@ -5,7 +5,7 @@ CHUNK_SIZE = 12 * 1024 * 1024
 IO_CHUNK_SIZE = 16 * 1024 * 1024
 VFS_MISSING_VERSION = "<VFS-MISSING>"
 VFS_UPLOAD_IDLE_TIMEOUT = 3600
-VFS_MAX_UPLOAD_CHUNK = 64 * 1024 * 1024
+VFS_MAX_UPLOAD_CHUNK = 32 * 1024 * 1024
 if os.name == "nt":import msvcrt
 else:import select, termios, tty
 def get_optional_input(text, timeout=15):
@@ -121,11 +121,11 @@ def get_optional_input(text, timeout=15):
         print()
         return ""
     finally:termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-def safe_path(base_dir, req_path):
+def safe_path(base_dir, req_path, allow_root=False):
     base = os.path.realpath(base_dir)
     target = os.path.realpath(os.path.join(base, str(req_path).lstrip("/\\")))
     try:
-        if os.path.commonpath((base, target)) != base or base==target:raise PermissionError("Access denied: path outside shared directory")
+        if os.path.commonpath((base, target)) != base or (base==target and not allow_root):raise PermissionError("Access denied: path outside shared directory")
     except ValueError:raise PermissionError("Access denied: path outside shared directory")
     return target
 def make_packet(meta: dict, payload: bytes = b"") -> bytes:
@@ -262,6 +262,7 @@ class FileServer:
                 target = safe_path(self.shared_dir, rel_path)
                 offset = meta.get("offset",meta.get("chunk_idx", 0) * CHUNK_SIZE,)
                 length = meta.get("length", CHUNK_SIZE)
+                if length > 1024 * 1024 * 32: resp = make_packet({"status": "error","message": "Download chunk length exceeds maximum"})
                 if not os.path.isfile(target):resp = b"\x01File not found"
                 else:
                     with open(target, "rb") as f:
