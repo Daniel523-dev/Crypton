@@ -53,7 +53,7 @@ class TCPServer:
         self.auth_key_dir = auth_key_dir
         self.on_exchange = on_exchange
         self.newTOTP = newTOTP
-        self.last_totp_use=0
+        self.last_bootstrap=0
         self._enable_bootstrap = False
         self.at_rest_key = _derive_at_rest_key(password, "./server_salt.bin")
         validate_auth_keys(self.auth_key_dir, self.at_rest_key)
@@ -92,7 +92,7 @@ class TCPServer:
                 client_init_pub = client_temp_pub[len(b"REQ_ADMIN"):]
             elif client_temp_pub.startswith(b"REQ_KEY"):
                 if not self._enable_bootstrap:raise ProtocolError("Bootstrap authentication is disabled")
-                if time.time() - self.last_totp_use < 45:raise ProtocolError("Bootstrap authentication is on cooldown")
+                if time.time() - self.last_bootstrap < 45:raise ProtocolError("Bootstrap authentication is on cooldown")
                 is_bootstrap = True
                 client_init_pub = client_temp_pub[7:]
             else:client_init_pub = client_temp_pub
@@ -118,9 +118,8 @@ class TCPServer:
                 rc = counter
                 return out
             if is_admin or is_bootstrap:
-                if is_bootstrap:self.last_totp_use = time.time()
-                tss_salt,totp_salt = os.urandom(64),os.urandom(32)
-                self._send_handshake(temp_cid, init_key[1] + tss_salt + totp_salt)
+                tss_salt = os.urandom(64)
+                self._send_handshake(temp_cid, init_key[1] + tss_salt)
                 totp_info = recv_enc()
                 salt=totp_info[:32]
                 hashed_totp=totp_info[32:]
@@ -132,9 +131,10 @@ class TCPServer:
                 totp = pyotp.TOTP(base32_secret)
                 for offset in range(-1, 2):
                     candidate = totp.at(current_time + offset * 30)
-                    candidate_hash = Encryption.kdf_fast(util.str_to_bytes(candidate), salt + totp_salt)
+                    candidate_hash = Encryption.kdf_fast(util.str_to_bytes(candidate), salt)
                     if hmac.compare_digest(candidate_hash, hashed_totp):totp_code = candidate
                 if totp_code is None:raise ProtocolError("Invalid TOTP code")
+                if is_bootstrap:self.last_bootstrap = time.time()
                 tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
                 send_enc(b'')
                 if is_admin:
@@ -183,7 +183,7 @@ class TCPServer:
                 try:self._usernames[_hash]=auth_file[:-4]
                 except:pass
                 self._backend.auth_finished(temp_cid, _hash)
-        except Exception as exc:pass
+        except Exception as exc:traceback.print_exception(exc)
     def _admin_send_json(self, result, eid, cid):
         header = json.dumps(result, separators=(",", ":")).encode("utf-8")
         packet = len(header).to_bytes(4, "big") + header
@@ -324,13 +324,14 @@ class TCPServer:
         try:close_client(target_cid)
         except Exception as exc:raise ProtocolError(f"Disconnect failed: {exc}") from exc
         with self._lock:self._usernames.pop(target_cid, None)
+        self.close_client(target_cid)
         self._admin_send_json({"status": "ok", "disconnected": True},eid,cid)
     def _backend_on_exchange(self, cid, eid):
         try:
             data = self.recv(cid, eid=eid, timeout=STD_TIMEOUT)
             if data is None:return
             if self.on_exchange is not None:self.on_exchange(self, eid, data, cid)
-        except Exception:pass
+        except Exception:traceback.print_exc()
     def send(self, payload, eid=None, client_id=None):
         if eid is not None and (not isinstance(eid, bytes) or len(eid) != EID_SIZE):raise ValueError("eid must be exactly 8 bytes")
         with self._lock:
@@ -377,12 +378,14 @@ class TCPClient:
     def __init__(self, host, port, password, auth_key="./auth_key", admin_auth_code = None,auth_key_code_callback=None, on_exchange=None, simult_exchanges=4):
         self.on_exchange = on_exchange
         self.admin_auth_code=admin_auth_code
+        self.host=host
+        self.port=port
+        self.simult_exchanges=simult_exchanges
         self._lock = threading.RLock()
         self.sc = 1
         self.rc = 0
         self.ekey = None
         self.at_rest_key = None
-        self._backend = backend.Client(host, port, on_exchange=self._backend_on_exchange, simult_exchanges=simult_exchanges)
         try:self._authenticate(password, auth_key, auth_key_code_callback)
         except Exception:
             self.close()
@@ -392,6 +395,10 @@ class TCPClient:
     def _authenticate(self, password, auth_key, auth_key_code_callback):
         is_admin = isinstance(self.admin_auth_code, str)
         is_bootstrap = not is_admin and not os.path.exists(auth_key)
+        if is_bootstrap:
+            if auth_key_code_callback is None:raise ValueError("auth_key_code_callback is required for bootstrap")
+            totp_code = auth_key_code_callback()
+        self._backend = backend.Client(self.host, self.port, on_exchange=self._backend_on_exchange, simult_exchanges=self.simult_exchanges)
         ekey_defined = False
         tss = None
         def _send_enc(payload):
@@ -418,32 +425,26 @@ class TCPClient:
             response = self._recv_handshake(timeout=STD_TIMEOUT)
             if response is None:raise ProtocolError("Handshake timed out")
             pub_len = len(init_key[1])
-            if len(response) != pub_len + 96:raise ProtocolError("Invalid admin handshake")
-            server_init_pub = response[:-96]
+            if len(response) != pub_len + 64:raise ProtocolError("Invalid admin handshake")
+            server_init_pub = response[:-64]
             salt = os.urandom(32)
-            tss_salt = response[-96:-32]
-            totp_salt = response[-32:]
+            tss_salt = response[-64:]
             tss = Encryption.shared_secret(init_key[0], server_init_pub)
             totp_code = self.admin_auth_code
-            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt + totp_salt))
+            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt))
             tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
             _recv_enc(STD_TIMEOUT * 2)
             self.ekey = tss
             ekey_defined = True
         elif is_bootstrap:
-            if auth_key_code_callback is None:raise ValueError("auth_key_code_callback is required for bootstrap")
             self._send_handshake(b"REQ_KEY" + init_key[1])
             response = self._recv_handshake(timeout=STD_TIMEOUT)
             if response is None:raise ProtocolError("Handshake timed out")
-            pub_len = len(init_key[1])
-            server_init_pub = response[:pub_len]
-            if len(response) != pub_len + 96:raise ProtocolError("Invalid admin handshake")
+            server_init_pub = response[:len(init_key[1])]
             salt = os.urandom(32)
-            tss_salt = response[-96:-32]
-            totp_salt = response[-32:]
+            tss_salt = response[-64:]
             tss = Encryption.shared_secret(init_key[0], server_init_pub)
-            totp_code = auth_key_code_callback()
-            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt + totp_salt))
+            _send_enc(salt + Encryption.kdf_fast(totp_code.encode("utf-8"), salt))
             tss = Encryption.kdf(util.str_to_bytes(totp_code),tss_salt + tss,5)
             _recv_enc(STD_TIMEOUT * 2)
             nonce = Encryption.basic_kdf(_recv_enc(), b"", 64)
